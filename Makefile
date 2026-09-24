@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bridge-ipv6-dns-sanitizer
-PKG_VERSION:=1.6.1
+PKG_VERSION:=1.6.3
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
