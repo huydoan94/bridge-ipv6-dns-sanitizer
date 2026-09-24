@@ -18,10 +18,10 @@ constexpr size_t ENDPOINT_BUFSIZE = 256U;
 constexpr size_t LOCAL_DNS_TEXT_BUFSIZE = INET6_ADDRSTRLEN + IF_NAMESIZE + 3U;
 
 struct addr_list {
-	char buf[ADDR_LIST_BUFSIZE];
-	size_t len;
-	bool first;
-	bool truncated;
+    char buf[ADDR_LIST_BUFSIZE];
+    size_t len;
+    bool first;
+    bool truncated;
 };
 
 __attribute__((format(printf, 1, 2)))
@@ -57,7 +57,7 @@ void format_ra_log_detail(char *detail, size_t detail_len,
                           unsigned int pvd_removed);
 
 void format_dhcpv6_log_detail(char *detail, size_t detail_len,
-			      const char *message_name,
+                  const char *message_name,
                               const char *endpoints,
                               const uint8_t *transaction_id,
                               const char *client_id,

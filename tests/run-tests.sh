@@ -84,7 +84,7 @@ if [ "$NFNETLINK_INCLUDE_DIR" != "/usr/include" ] &&
 	set -- "$@" -isystem "$NFNETLINK_INCLUDE_DIR"
 fi
 
-CXXFLAGS="-std=gnu++11 -O0 -g -Wall -Wextra -Wformat=2 -Wshadow -Werror"
+CXXFLAGS="-std=gnu++11 -O0 -g -Wall -Wextra -Wpedantic -Wformat=2 -Wshadow -Wconversion -Werror"
 LDFLAGS=""
 
 if [ "$COVERAGE" -eq 1 ]; then

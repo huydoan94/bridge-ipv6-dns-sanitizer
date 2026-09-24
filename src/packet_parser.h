@@ -7,17 +7,17 @@
 #include <tins/pdu.h>
 
 enum ipv6_transport_result {
-	IPV6_TRANSPORT_FOUND = 0,
-	IPV6_TRANSPORT_OTHER,
-	IPV6_TRANSPORT_UNSUPPORTED,
-	IPV6_TRANSPORT_MALFORMED,
+    IPV6_TRANSPORT_FOUND = 0,
+    IPV6_TRANSPORT_OTHER,
+    IPV6_TRANSPORT_UNSUPPORTED,
+    IPV6_TRANSPORT_MALFORMED,
 };
 
 struct ipv6_transport_view {
-	Tins::PDU::PDUType packet_type;
-	uint8_t *header;
-	size_t len;
-	bool fragmented;
+    Tins::PDU::PDUType packet_type;
+    uint8_t *header;
+    size_t len;
+    bool fragmented;
 };
 
 enum ipv6_transport_result

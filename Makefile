@@ -29,8 +29,8 @@ define Package/vxlan-ipv6-sanitize/conffiles
 /etc/config/vxlan-ipv6-sanitize
 endef
 
-SANITIZE_SOURCES := helper.cpp logging.cpp packet_parser.cpp vxlan-ipv6-sanitize.cpp
-SANITIZE_WARNINGS := -Wall -Wextra -Wformat=2 -Wshadow
+SANITIZE_SOURCES := logging.cpp network.cpp packet.cpp packet_parser.cpp vxlan-ipv6-sanitize.cpp
+SANITIZE_WARNINGS := -Wall -Wextra -Wpedantic -Wformat=2 -Wshadow -Wconversion -Werror
 
 TARGET_CXXFLAGS += -Os $(SANITIZE_WARNINGS) -std=gnu++11 -ffunction-sections -fdata-sections
 TARGET_CPPFLAGS += -isystem $(STAGING_DIR)/usr/include -DVXLAN_IPV6_SANITIZE_VERSION=\"$(PKG_VERSION)\"

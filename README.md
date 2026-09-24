@@ -181,10 +181,10 @@ process in the system log.
 
 ## Formatting
 
-The included `.clang-format` keeps tab indentation and Linux-style braces while
-setting `ColumnLimit: 0`. Variable declarations stay joined to their initializer
-expressions, while longer function calls—including initializer calls—and longer
-declarations and definitions retain aligned multi-line argument layouts.
+The included `.clang-format` follows `CODING_STYLE.md`: four-space indentation,
+no tabs, Linux-style braces, and one argument per line for substantial
+multi-line declarations and calls. `ColumnLimit: 0` avoids arbitrary wrapping;
+long expressions should be split where doing so improves readability.
 
 ## Source layout
 
@@ -192,8 +192,10 @@ declarations and definitions retain aligned multi-line argument layouts.
 .clang-format             project C++ formatting rules
 src/
 ├── vxlan-ipv6-sanitize.cpp daemon and packet sanitizers
-├── helper.cpp              packet/network helpers
-├── helper.h
+├── network.cpp             interface and local-address discovery
+├── network.h
+├── packet.cpp              packet mutation and checksum mechanics
+├── packet.h
 ├── packet_parser.cpp       libtins IPv6 transport parser
 ├── packet_parser.h         parser interface
 ├── logging.cpp             logging and log formatting
