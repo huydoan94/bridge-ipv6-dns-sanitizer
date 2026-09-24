@@ -33,7 +33,7 @@ SANITIZE_SOURCES := logging.cpp network.cpp packet.cpp packet-parser.cpp bridge-
 SANITIZE_WARNINGS := -Wall -Wextra -Wpedantic -Wformat=2 -Wshadow -Wconversion -Werror
 
 TARGET_CXXFLAGS += -Os $(SANITIZE_WARNINGS) -std=gnu++11 -ffunction-sections -fdata-sections
-TARGET_CPPFLAGS += -isystem $(STAGING_DIR)/usr/include -DBRIDGE_IPV6_DNS_SANITIZER_VERSION=\"$(PKG_VERSION)\"
+TARGET_CPPFLAGS += -isystem $(TOOLCHAIN_DIR)/include/fortify -isystem $(STAGING_DIR)/usr/include -DBRIDGE_IPV6_DNS_SANITIZER_VERSION=\"$(PKG_VERSION)\"
 TARGET_LDFLAGS += -Wl,--gc-sections
 
 define Build/Prepare
