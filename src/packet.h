@@ -1,14 +1,11 @@
-#ifndef VXLAN_IPV6_SANITIZE_PACKET_H
-#define VXLAN_IPV6_SANITIZE_PACKET_H
+#ifndef BRIDGE_IPV6_DNS_SANITIZER_PACKET_H
+#define BRIDGE_IPV6_DNS_SANITIZER_PACKET_H
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include <netinet/in.h>
 #include <netinet/ip6.h>
-
-constexpr size_t DHCPV6_TRANSACTION_ID_LEN = 3U;
-constexpr size_t NDP_OPTION_LEN_UNIT_OCTETS = 8U;
 
 enum ipv6_packet_result {
     IPV6_PACKET_OK = 0,

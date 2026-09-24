@@ -23,28 +23,11 @@
 #include <tins/icmpv6.h>
 #include <tins/pdu.h>
 
+#include "constants.h"
 #include "logging.h"
 #include "network.h"
 #include "packet.h"
-#include "packet_parser.h"
-
-#ifndef VXLAN_IPV6_SANITIZE_VERSION
-#define VXLAN_IPV6_SANITIZE_VERSION "unknown"
-#endif
-
-constexpr char PROGRAM_VERSION[] = VXLAN_IPV6_SANITIZE_VERSION;
-
-constexpr uint16_t QUEUE_NUM = 100U;
-constexpr uint32_t QUEUE_MAXLEN = 1024U;
-constexpr uint32_t COPY_RANGE = UINT16_MAX;
-constexpr int POLL_TIMEOUT_MS = 1000;
-constexpr size_t NFQ_NETLINK_HEADROOM = 4096U;
-constexpr size_t NFQ_RECV_BUFSIZE = COPY_RANGE + NFQ_NETLINK_HEADROOM;
-
-constexpr uint16_t RA_NEUTRAL_ROUTER_LIFETIME = 0U;
-constexpr uint8_t ND_OPTION_PVD = 21U;
-
-constexpr uint16_t CHECKSUM_INVALID_XOR = 0x0001U;
+#include "packet-parser.h"
 
 struct rdnss_option_wire {
     struct nd_opt_hdr header;

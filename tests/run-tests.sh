@@ -18,7 +18,7 @@ if [ -z "$PROGRAM_VERSION" ]; then
 	exit 1
 fi
 
-VERSION_CPPFLAG="-DVXLAN_IPV6_SANITIZE_VERSION=\"$PROGRAM_VERSION\""
+VERSION_CPPFLAG="-DBRIDGE_IPV6_DNS_SANITIZER_VERSION=\"$PROGRAM_VERSION\""
 
 libtins_has_required_api()
 {
@@ -66,8 +66,8 @@ if [ ! -f "$NFNETLINK_INCLUDE_DIR/libnfnetlink/libnfnetlink.h" ]; then
 fi
 
 mkdir -p "$BUILD_DIR"
-rm -f "$BUILD_DIR/unit-tests-unit_tests.gcda" \
-	"$BUILD_DIR/unit-tests-unit_tests.gcno"
+rm -f "$BUILD_DIR/unit-tests-unit-tests.gcda" \
+	"$BUILD_DIR/unit-tests-unit-tests.gcno"
 
 set --
 
@@ -103,7 +103,7 @@ fi
 	-I"$PROJECT_DIR/src" \
 	"$@" \
 	-o "$BUILD_DIR/unit-tests" \
-	"$TEST_DIR/unit_tests.cpp" \
+	"$TEST_DIR/unit-tests.cpp" \
 	$LDFLAGS \
 	-L"$LIBTINS_PREFIX/lib" \
 	-ltins
@@ -114,6 +114,6 @@ if [ "$COVERAGE" -eq 1 ]; then
 	(
 		cd "$BUILD_DIR"
 		gcov --branch-counts --branch-probabilities \
-			unit-tests-unit_tests.gcno
+			unit-tests-unit-tests.gcno
 	)
 fi

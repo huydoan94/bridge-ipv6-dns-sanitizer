@@ -1,4 +1,4 @@
-# vxlan-ipv6-sanitize
+# bridge-ipv6-dns-sanitizer
 
 Small OpenWrt daemon that sanitizes IPv6 Router Advertisements and DHCPv6
 server replies received through VXLAN before they reach local clients.
@@ -85,6 +85,9 @@ and `libtins`. `kmod-nft-queue` selects `kmod-nfnetlink-queue` transitively. The
 example rules do not use the bridge-specific meta, reject, or conntrack
 extensions supplied by `kmod-nft-bridge`.
 
+The source directory is still named `package/vxlan-ipv6-sanitize`, so the OpenWrt
+build target retains that path.
+
 Add the package to your OpenWrt source tree, then run:
 
 ```sh
@@ -112,8 +115,8 @@ make package/vxlan-ipv6-sanitize/compile V=s
 Install the generated `.ipk`, then enable and start the service:
 
 ```sh
-/etc/init.d/vxlan-ipv6-sanitize enable
-/etc/init.d/vxlan-ipv6-sanitize start
+/etc/init.d/bridge-ipv6-dns-sanitizer enable
+/etc/init.d/bridge-ipv6-dns-sanitizer start
 ```
 
 ## nftables
@@ -123,13 +126,13 @@ The package does **not** install nftables rules. Configure NFQUEUE yourself.
 An example is included at:
 
 ```text
-examples/90-vxlan-ipv6-sanitize.nft
+examples/90-bridge-ipv6-dns-sanitizer.nft
 ```
 
 Example rules:
 
 ```nft
-table bridge vxlan_ipv6_sanitize {
+table bridge bridge_ipv6_dns_sanitizer {
     chain vxlan_ingress {
         type filter hook prerouting priority filter; policy accept;
 
@@ -151,7 +154,7 @@ the kernel.
 OpenWrt configuration file:
 
 ```text
-/etc/config/vxlan-ipv6-sanitize
+/etc/config/bridge-ipv6-dns-sanitizer
 ```
 
 Default:
@@ -164,22 +167,25 @@ config sanitizer 'main'
 Enable verbose packet logging:
 
 ```sh
-uci set vxlan-ipv6-sanitize.main.verbose='1'
-uci commit vxlan-ipv6-sanitize
-/etc/init.d/vxlan-ipv6-sanitize restart
+uci set bridge-ipv6-dns-sanitizer.main.verbose='1'
+uci commit bridge-ipv6-dns-sanitizer
+/etc/init.d/bridge-ipv6-dns-sanitizer restart
 ```
 
 ## Logs
 
 ```sh
-logread -f -e vxlan-ipv6-sanitize
+logread -f -e bridge-ipv6-dns-sanitizer
 ```
 
 At startup, the daemon reports its packaged version. The message text omits the
-redundant `vxlan-ipv6-sanitize:` prefix because procd already identifies the
-process in the system log.
+redundant `bridge-ipv6-dns-sanitizer:` prefix because procd already identifies
+the process in the system log.
 
 ## Formatting
+
+Multiword filenames use lowercase hyphens. C and C++ identifiers use underscores
+where required by the language.
 
 The included `.clang-format` follows `CODING_STYLE.md`: four-space indentation,
 no tabs, Linux-style braces, and one argument per line for substantial
@@ -191,13 +197,14 @@ long expressions should be split where doing so improves readability.
 ```text
 .clang-format             project C++ formatting rules
 src/
-├── vxlan-ipv6-sanitize.cpp daemon and packet sanitizers
+├── bridge-ipv6-dns-sanitizer.cpp daemon and packet sanitizers
+├── constants.h                     shared application and protocol constants
 ├── network.cpp             interface and local-address discovery
 ├── network.h
 ├── packet.cpp              packet mutation and checksum mechanics
 ├── packet.h
-├── packet_parser.cpp       libtins IPv6 transport parser
-├── packet_parser.h         parser interface
+├── packet-parser.cpp       libtins IPv6 transport parser
+├── packet-parser.h         parser interface
 ├── logging.cpp             logging and log formatting
 └── logging.h
 ```

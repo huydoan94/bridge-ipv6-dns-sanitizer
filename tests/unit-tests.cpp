@@ -31,12 +31,12 @@ static ssize_t test_recv(int sockfd, void *buf, size_t len, int flags);
 #include "../src/packet.cpp"
 
 #include "../src/logging.cpp"
-#include "../src/packet_parser.cpp"
+#include "../src/packet-parser.cpp"
 
-#define main vxlan_ipv6_sanitize_daemon_main
+#define main bridge_ipv6_dns_sanitizer_daemon_main
 #define poll test_poll
 #define recv test_recv
-#include "../src/vxlan-ipv6-sanitize.cpp"
+#include "../src/bridge-ipv6-dns-sanitizer.cpp"
 #undef recv
 #undef poll
 #undef main
@@ -1491,7 +1491,7 @@ int run_daemon(std::vector<std::string> arguments)
     argv.push_back(nullptr);
     optind = 1;
     opterr = 0;
-    return vxlan_ipv6_sanitize_daemon_main(static_cast<int>(arguments.size()), argv.data());
+    return bridge_ipv6_dns_sanitizer_daemon_main(static_cast<int>(arguments.size()), argv.data());
 }
 
 std::string capture_daemon_stdout(
@@ -1538,11 +1538,11 @@ void test_startup_logging()
 
     EXPECT(status == EXIT_SUCCESS);
     expect_text_contains(output.c_str(),
-                         "starting version " VXLAN_IPV6_SANITIZE_VERSION "\n");
+                         "starting version " BRIDGE_IPV6_DNS_SANITIZER_VERSION "\n");
     expect_text_contains(output.c_str(), "listening on NFQUEUE 100\n");
     expect_text_contains(output.c_str(), "stopping\n");
     expect_text_contains(output.c_str(), "exiting\n");
-    EXPECT(output.find("vxlan-ipv6-sanitize:") == std::string::npos);
+    EXPECT(output.find("bridge-ipv6-dns-sanitizer:") == std::string::npos);
 }
 
 void test_signal_and_cli_paths()

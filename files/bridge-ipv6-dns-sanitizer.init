@@ -5,8 +5,8 @@ USE_PROCD=1
 START=20
 STOP=89
 
-PROG=/usr/sbin/vxlan-ipv6-sanitize
-CONF=vxlan-ipv6-sanitize
+PROG=/usr/sbin/bridge-ipv6-dns-sanitizer
+CONF=bridge-ipv6-dns-sanitizer
 
 start_service() {
 	local verbose

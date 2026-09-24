@@ -4,10 +4,10 @@
 #
 # The first two statements make this drop-in idempotent across fw4 reloads,
 # following the same create/flush/redeclare pattern used by fw4 itself.
-table bridge vxlan_ipv6_sanitize
-flush table bridge vxlan_ipv6_sanitize
+table bridge bridge_ipv6_dns_sanitizer
+flush table bridge bridge_ipv6_dns_sanitizer
 
-table bridge vxlan_ipv6_sanitize {
+table bridge bridge_ipv6_dns_sanitizer {
 	chain vxlan_ingress {
 		type filter hook prerouting priority filter; policy accept;
 

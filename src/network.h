@@ -1,5 +1,5 @@
-#ifndef VXLAN_IPV6_SANITIZE_NETWORK_H
-#define VXLAN_IPV6_SANITIZE_NETWORK_H
+#ifndef BRIDGE_IPV6_DNS_SANITIZER_NETWORK_H
+#define BRIDGE_IPV6_DNS_SANITIZER_NETWORK_H
 
 #include <stddef.h>
 #include <stdint.h>

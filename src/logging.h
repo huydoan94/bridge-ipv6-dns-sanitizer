@@ -1,21 +1,14 @@
-#ifndef VXLAN_IPV6_SANITIZE_LOGGING_H
-#define VXLAN_IPV6_SANITIZE_LOGGING_H
+#ifndef BRIDGE_IPV6_DNS_SANITIZER_LOGGING_H
+#define BRIDGE_IPV6_DNS_SANITIZER_LOGGING_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#include <linux/if_ether.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/ip6.h>
 
-constexpr size_t ADDR_LIST_BUFSIZE = 512U;
-constexpr size_t MAC_TEXT_BUFSIZE = ETH_ALEN * 3U;
-constexpr size_t CLIENT_ID_BUFSIZE = 384U;
-constexpr size_t DETAIL_BUFSIZE = 1536U;
-constexpr size_t ERROR_BUFSIZE = 256U;
-constexpr size_t ENDPOINT_BUFSIZE = 256U;
-constexpr size_t LOCAL_DNS_TEXT_BUFSIZE = INET6_ADDRSTRLEN + IF_NAMESIZE + 3U;
+#include "constants.h"
 
 struct addr_list {
     char buf[ADDR_LIST_BUFSIZE];
