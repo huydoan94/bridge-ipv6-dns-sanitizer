@@ -9,8 +9,9 @@ precedence when they are more restrictive.
 - Prefer simple, explicit data flow over clever abstractions.
 - Use standard-library, operating-system, and established ecosystem APIs before
   writing custom equivalents.
-- Add a dependency only when it materially removes complex, error-prone code
-  and is available on every supported target.
+- Add a dependency when it replaces manual implementation and makes behavior
+  easier to read and review, provided it is practical on every supported
+  target.
 - Search for an existing equivalent before adding a function.
 - Consolidate repeated parsing, conversion, timing, percentage, and bounds
   logic in the module that owns the concept.
@@ -19,6 +20,24 @@ precedence when they are more restrictive.
 - Retain checks for real external failures: invalid input, allocation failure,
   I/O failure, malformed data, timeouts, and changing system state.
 - Make the smallest coherent change that fully solves the problem.
+
+## Human-readable code
+
+- Optimize code for human review and maintenance, not merely functional
+  correctness.
+- Prefer the implementation with the fewest conceptual steps when multiple
+  implementations produce the same result.
+- Use the most natural expression provided by the language, standard library,
+  platform, or an established ecosystem library.
+- Prefer a named library operation over manual loops, parsing, calculations,
+  bookkeeping, or state handling that implements the same behavior.
+- Use libraries to encapsulate implementation complexity and reduce how much
+  code a reviewer must read and understand. Do not reinvent functionality that
+  a suitable maintained library already provides.
+- Treat reduced review time and cognitive load as material benefits when
+  evaluating an abstraction or dependency.
+- Keep application code declarative where practical: make it state what should
+  happen and delegate implementation mechanics to well-named APIs.
 
 ## Architecture and ownership
 
@@ -44,7 +63,9 @@ precedence when they are more restrictive.
   platform already exposes lifecycle events.
 - Confirm target availability, binary-size cost, memory cost, and maintenance
   impact before adding a library.
-- Do not add a library for a trivial operation that is already clear and safe.
+- Do not reject a library merely because the operation is small. Prefer the
+  library when it makes the application code more natural and reviewable, as
+  long as its target availability and operational cost remain acceptable.
 - Remove dependencies when their final use disappears.
 
 ## C language conventions
