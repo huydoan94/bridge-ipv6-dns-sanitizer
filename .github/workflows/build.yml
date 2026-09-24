@@ -1,0 +1,125 @@
+name: Build OpenWrt package
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_NAME: bridge-ipv6-dns-sanitizer
+  OPENWRT_REF: openwrt-25.12
+  SDK_VERSION_SUFFIX: "-openwrt-25.12"
+
+jobs:
+  test:
+    name: Host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y libnl-3-dev zlib1g-dev
+      - name: Run unit and netlink tests
+        run: make -C tests check check-netlink
+
+  generate-matrix:
+    name: Discover OpenWrt architectures
+    runs-on: ubuntu-latest
+    outputs:
+      arches: ${{ steps.dump.outputs.arches }}
+    steps:
+      - name: Checkout OpenWrt metadata
+        uses: actions/checkout@v4
+        with:
+          repository: openwrt/openwrt
+          ref: ${{ env.OPENWRT_REF }}
+          path: openwrt
+          fetch-depth: 1
+
+      - name: Dump distinct architectures
+        id: dump
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          arches=$(perl scripts/dump-target-info.pl architectures | awk '{print $1}' | sort -u)
+          printf '%s\n' "$arches"
+          json=$(printf '%s\n' "$arches" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          jq -e 'length > 0' <<< "$json" > /dev/null
+          echo "arches=$json" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: [test, generate-matrix]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(needs.generate-matrix.outputs.arches) }}
+    steps:
+      # gh-action-sdk mounts $GITHUB_WORKSPACE as the feed root and scans
+      # it one level deep for <pkgname>/Makefile. Checking out straight
+      # into the workspace root put Makefile at the root itself (too
+      # shallow to be seen as a package) -> "No rule to make target
+      # 'package/bridge-ipv6-dns-sanitizer/download'". Checking out into a subfolder
+      # named after the package fixes it: workspace/bridge-ipv6-dns-sanitizer/Makefile.
+      - uses: actions/checkout@v4
+        with:
+          path: ${{ env.PACKAGE_NAME }}
+          fetch-depth: 0
+
+      - name: Build bridge-ipv6-dns-sanitizer for ${{ matrix.arch }}
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}${{ env.SDK_VERSION_SUFFIX }}
+          PACKAGES: ${{ env.PACKAGE_NAME }}
+          NO_REFRESH_CHECK: true
+          IGNORE_ERRORS: n
+
+      - name: Collect bridge-ipv6-dns-sanitizer packages
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          while IFS= read -r -d '' package; do
+            cp "$package" "dist/${PACKAGE_ARCH}_$(basename "$package")"
+          done < <(find "bin/packages/$PACKAGE_ARCH" -type f \( -name 'bridge-ipv6-dns-sanitizer-*.apk' -o -name 'bridge-ipv6-dns-sanitizer_*.ipk' \) -print0)
+          test -n "$(find dist -type f -print -quit)"
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.arch }}
+          path: logs/
+
+  release:
+    name: Publish release assets
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all built packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
