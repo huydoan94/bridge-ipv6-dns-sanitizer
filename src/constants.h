@@ -14,7 +14,6 @@
 
 constexpr char PROGRAM_VERSION[] = BRIDGE_IPV6_DNS_SANITIZER_VERSION;
 
-constexpr uint16_t QUEUE_NUM = 100U;
 constexpr uint32_t QUEUE_MAXLEN = 1024U;
 constexpr uint32_t COPY_RANGE = UINT16_MAX;
 constexpr int POLL_TIMEOUT_MS = 1000;

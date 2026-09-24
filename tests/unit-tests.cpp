@@ -274,6 +274,7 @@ struct nfq_stub_state {
     std::vector<verdict_call> verdicts;
     bool open_succeeds;
     bool create_queue_succeeds;
+    uint16_t queue_number;
     int queue_flags_result;
     int mode_result;
     int maxlen_result;
@@ -329,6 +330,7 @@ void reset_stubs()
     nfq_stub.verdicts.clear();
     nfq_stub.open_succeeds = true;
     nfq_stub.create_queue_succeeds = true;
+    nfq_stub.queue_number = 0;
     nfq_stub.queue_flags_result = 0;
     nfq_stub.mode_result = 0;
     nfq_stub.maxlen_result = 0;
@@ -462,7 +464,7 @@ struct nfq_q_handle *nfq_create_queue(struct nfq_handle *handle, uint16_t num,
                                       nfq_callback *callback, void *data)
 {
     (void)handle;
-    (void)num;
+    nfq_stub.queue_number = num;
     (void)callback;
     (void)data;
     return nfq_stub.create_queue_succeeds ? reinterpret_cast<struct nfq_q_handle *>(1) : nullptr;
@@ -1527,19 +1529,40 @@ std::string capture_daemon_stdout(
     return output;
 }
 
+void test_queue_number_parsing()
+{
+    uint16_t queue_number = 0;
+
+    EXPECT(parse_queue_number("0", &queue_number));
+    EXPECT(queue_number == 0U);
+    EXPECT(parse_queue_number("65535", &queue_number));
+    EXPECT(queue_number == 65535U);
+    EXPECT(parse_queue_number("+1", &queue_number));
+    EXPECT(queue_number == 1U);
+    EXPECT(parse_queue_number(" 2", &queue_number));
+    EXPECT(queue_number == 2U);
+    EXPECT(!parse_queue_number(nullptr, &queue_number));
+    EXPECT(!parse_queue_number("", &queue_number));
+    EXPECT(!parse_queue_number("-1", &queue_number));
+    EXPECT(!parse_queue_number("1x", &queue_number));
+    EXPECT(!parse_queue_number("65536", &queue_number));
+    EXPECT(!parse_queue_number("1", nullptr));
+}
+
 void test_startup_logging()
 {
     reset_stubs();
     running = 0;
     int status = EXIT_FAILURE;
     const std::string output = capture_daemon_stdout(
-        { "daemon" },
+        { "daemon", "-q", "321" },
         status);
 
     EXPECT(status == EXIT_SUCCESS);
     expect_text_contains(output.c_str(),
                          "starting version " BRIDGE_IPV6_DNS_SANITIZER_VERSION "\n");
-    expect_text_contains(output.c_str(), "listening on NFQUEUE 100\n");
+    expect_text_contains(output.c_str(), "listening on NFQUEUE 321\n");
+    EXPECT(nfq_stub.queue_number == 321U);
     expect_text_contains(output.c_str(), "stopping\n");
     expect_text_contains(output.c_str(), "exiting\n");
     EXPECT(output.find("bridge-ipv6-dns-sanitizer:") == std::string::npos);
@@ -1562,6 +1585,11 @@ void test_signal_and_cli_paths()
     EXPECT(sigaction_calls == 2);
 
     EXPECT(run_daemon({ "daemon", "-h" }) == EXIT_SUCCESS);
+    EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "invalid" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "65536" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100", "extra" }) == EXIT_FAILURE);
     EXPECT(run_daemon({ "daemon", "-x" }) == EXIT_FAILURE);
 }
 
@@ -1569,30 +1597,30 @@ void test_daemon_setup_failures()
 {
     reset_stubs();
     sigaction_fail_call = 1;
-    EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);
     EXPECT(nfq_stub.close_calls == 0);
 
     reset_stubs();
     nfq_stub.open_succeeds = false;
-    EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);
     reset_stubs();
     nfq_stub.create_queue_succeeds = false;
-    EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);
     EXPECT(nfq_stub.close_calls == 1);
 
     reset_stubs();
     nfq_stub.queue_flags_result = -1;
-    EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);
     EXPECT(nfq_stub.destroy_calls == 1 && nfq_stub.close_calls == 1);
     reset_stubs();
     nfq_stub.mode_result = -1;
-    EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);
     EXPECT(nfq_stub.destroy_calls == 1 && nfq_stub.close_calls == 1);
 
     reset_stubs();
     nfq_stub.maxlen_result = -1;
     running = 0;
-    EXPECT(run_daemon({ "daemon", "-v" }) == EXIT_SUCCESS);
+    EXPECT(run_daemon({ "daemon", "-q", "100", "-v" }) == EXIT_SUCCESS);
     EXPECT(nfq_stub.destroy_calls == 1 && nfq_stub.close_calls == 1);
 }
 
@@ -1606,7 +1634,7 @@ void run_loop_case(const poll_step& poll_value,
     recv_steps = receive_values;
     nfq_stub.handle_packet_result = handle_result;
     running = 1;
-    EXPECT(run_daemon({ "daemon" }) == expected_status);
+    EXPECT(run_daemon({ "daemon", "-q", "100" }) == expected_status);
     EXPECT(nfq_stub.destroy_calls == 1);
     EXPECT(nfq_stub.close_calls == 1);
 }
@@ -1652,6 +1680,7 @@ int main()
     run_test("callback envelope policy", test_callback_envelope_policy);
     run_test("callback transport policy", test_callback_transport_policy);
     run_test("callback sanitizer results", test_callback_sanitizer_results);
+    run_test("queue number parsing", test_queue_number_parsing);
     run_test("startup logging", test_startup_logging);
     run_test("signal and CLI paths", test_signal_and_cli_paths);
     run_test("daemon setup failures", test_daemon_setup_failures);

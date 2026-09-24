@@ -15,7 +15,7 @@ Remote VXLAN peer
 bridge prerouting
       |
       v
-  NFQUEUE 100
+configured NFQUEUE
       |
       v
  libtins IPv6 parser
@@ -78,12 +78,13 @@ needs libtins' core library; libpcap support can be disabled in libtins
 configuration if it is not otherwise needed on the target. The package declares
 `libnetfilter-queue` and `libtins` as explicit build dependencies so their
 headers and libraries are built and staged before the daemon is compiled. They
-also remain runtime dependencies of the installed daemon.
+also remain runtime dependencies of the installed daemon. The `nftables`
+utility is used at service startup to inspect the active ruleset.
 
 The package's direct dependencies are `kmod-nft-queue`, `libnetfilter-queue`,
-and `libtins`. `kmod-nft-queue` selects `kmod-nfnetlink-queue` transitively. The
-example rules do not use the bridge-specific meta, reject, or conntrack
-extensions supplied by `kmod-nft-bridge`.
+`libtins`, and `nftables`. `kmod-nft-queue` selects `kmod-nfnetlink-queue`
+transitively. The example rules do not use the bridge-specific meta, reject, or
+conntrack extensions supplied by `kmod-nft-bridge`.
 
 The source directory is still named `package/vxlan-ipv6-sanitize`, so the OpenWrt
 build target retains that path.
@@ -123,6 +124,11 @@ Install the generated `.ipk`, then enable and start the service:
 
 The package does **not** install nftables rules. Configure NFQUEUE yourself.
 
+When the service starts, it checks the active numeric nftables ruleset for the
+configured queue number, including queue ranges. If no matching rule is found,
+or if the ruleset cannot be inspected, it logs a warning and continues to run.
+This check does not modify the ruleset.
+
 An example is included at:
 
 ```text
@@ -145,9 +151,9 @@ table bridge bridge_ipv6_dns_sanitizer {
 }
 ```
 
-The daemon accepts only bridge-family packets from NFQUEUE `100`. Linux exposes
-the IPv6 packet through `NFQA_PAYLOAD`; bridge L2 metadata is kept separately by
-the kernel.
+The daemon accepts only bridge-family packets from the configured NFQUEUE. Linux
+exposes the IPv6 packet through `NFQA_PAYLOAD`; bridge L2 metadata is kept
+separately by the kernel.
 
 ## Configuration
 
@@ -161,13 +167,27 @@ Default:
 
 ```uci
 config sanitizer 'main'
+    option queue_number '100'
     option verbose '0'
 ```
+
+`queue_number` is required and must be an integer from `0` through `65535`. The
+service logs an error and does not start when the option is missing or invalid.
+The nftables rules must use the same number.
 
 Enable verbose packet logging:
 
 ```sh
 uci set bridge-ipv6-dns-sanitizer.main.verbose='1'
+uci commit bridge-ipv6-dns-sanitizer
+/etc/init.d/bridge-ipv6-dns-sanitizer restart
+```
+
+Change the queue number and restart the service after updating the corresponding
+nftables rules:
+
+```sh
+uci set bridge-ipv6-dns-sanitizer.main.queue_number='200'
 uci commit bridge-ipv6-dns-sanitizer
 /etc/init.d/bridge-ipv6-dns-sanitizer restart
 ```

@@ -15,6 +15,9 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include <stdexcept>
+#include <string>
+
 #include <linux/netfilter.h>
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
@@ -675,9 +678,31 @@ static int packet_cb(struct nfq_q_handle *qh,
     return verdict;
 }
 
+static bool parse_queue_number(const char *text, uint16_t *queue_number)
+{
+    if (text == nullptr || queue_number == nullptr)
+        return false;
+
+    try {
+        const std::string input(text);
+        size_t parsed_length = 0;
+        const int value = std::stoi(input, &parsed_length, 10);
+
+        if (parsed_length != input.length() || value < 0 || value > UINT16_MAX)
+            return false;
+
+        *queue_number = static_cast<uint16_t>(value);
+        return true;
+    } catch (const std::invalid_argument &) {
+        return false;
+    } catch (const std::out_of_range &) {
+        return false;
+    }
+}
+
 static void usage(const char *prog)
 {
-    fprintf(stdout, "Usage: %s [-v]\n", prog);
+    fprintf(stdout, "Usage: %s -q QUEUE_NUMBER [-v]\n", prog);
 }
 
 int main(int argc, char **argv)
@@ -688,13 +713,23 @@ int main(int argc, char **argv)
     struct pollfd pfd;
     int fd;
     int rv;
+    uint16_t queue_number = 0;
     int opt;
     int exit_status = EXIT_SUCCESS;
     ssize_t recv_len;
+    bool queue_number_set = false;
     char buf[NFQ_RECV_BUFSIZE] __attribute__((aligned));
 
-    while ((opt = getopt(argc, argv, "vh")) != -1) {
+    while ((opt = getopt(argc, argv, "q:vh")) != -1) {
         switch (opt) {
+        case 'q':
+            if (!parse_queue_number(optarg, &queue_number)) {
+                log_error("invalid queue number '%s'; expected 0-65535", optarg);
+                usage(argv[0]);
+                return EXIT_FAILURE;
+            }
+            queue_number_set = true;
+            break;
         case 'v':
             ctx.verbose = true;
             break;
@@ -705,6 +740,18 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return EXIT_FAILURE;
         }
+    }
+
+    if (optind != argc) {
+        log_error("unexpected positional argument '%s'", argv[optind]);
+        usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    if (!queue_number_set) {
+        log_error("queue number is required");
+        usage(argv[0]);
+        return EXIT_FAILURE;
     }
 
     /* procd captures these streams; keep every message immediately visible. */
@@ -726,9 +773,9 @@ int main(int argc, char **argv)
         goto out;
     }
 
-    qh = nfq_create_queue(h, QUEUE_NUM, &packet_cb, &ctx);
+    qh = nfq_create_queue(h, queue_number, &packet_cb, &ctx);
     if (qh == nullptr) {
-        log_error("nfq_create_queue(%u) failed", QUEUE_NUM);
+        log_error("nfq_create_queue(%u) failed", queue_number);
         exit_status = EXIT_FAILURE;
         goto out_nfq;
     }
@@ -760,7 +807,7 @@ int main(int argc, char **argv)
     pfd.events = POLLIN;
     pfd.revents = 0;
 
-    log_info("listening on NFQUEUE %u", QUEUE_NUM);
+    log_info("listening on NFQUEUE %u", queue_number);
 
     while (running) {
         rv = poll(&pfd, 1, POLL_TIMEOUT_MS);

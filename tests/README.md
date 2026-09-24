@@ -18,6 +18,8 @@ The suite covers:
 - NFQUEUE callback accept/drop/change/fail-open decisions
 - daemon argument, setup, poll, receive, and cleanup paths
 - formatting helpers, address lists, DUIDs, and transaction IDs
+- required UCI queue-number validation and procd argument construction
+- advisory nftables checks for exact queue numbers, ranges, and inspection errors
 
 Run with installed development headers and libraries:
 
@@ -77,5 +79,5 @@ SANITIZERS=1 ./tests/run-tests.sh
 ```
 
 The suite is host-side. It does not replace an OpenWrt integration test that
-loads the real nftables rule, sends packets through NFQUEUE 100, and verifies
-the resulting bridge traffic.
+loads a real nftables rule, sends packets through the configured NFQUEUE, and
+verifies the resulting bridge traffic.

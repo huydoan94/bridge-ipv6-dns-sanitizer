@@ -14,7 +14,7 @@ define Package/bridge-ipv6-dns-sanitizer
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=Bridge IPv6 DNS sanitizer
-	DEPENDS:=+kmod-nft-queue +libnetfilter-queue +libtins
+	DEPENDS:=+kmod-nft-queue +libnetfilter-queue +libtins +nftables
 endef
 
 define Package/bridge-ipv6-dns-sanitizer/description

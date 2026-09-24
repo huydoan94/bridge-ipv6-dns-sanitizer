@@ -109,6 +109,7 @@ fi
 	-ltins
 
 "$BUILD_DIR/unit-tests"
+sh "$TEST_DIR/init-tests.sh"
 
 if [ "$COVERAGE" -eq 1 ]; then
 	(
