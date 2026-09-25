@@ -4,6 +4,11 @@
 #
 # The first two statements make this drop-in idempotent across fw4 reloads,
 # following the same create/flush/redeclare pattern used by fw4 itself.
+# Keep this queue number in sync with UCI main.queue_number.
+define sanitizer_queue = 100
+define dhcpv6_server_port = 547
+define dhcpv6_client_port = 546
+
 table bridge bridge_ipv6_dns_sanitizer
 flush table bridge bridge_ipv6_dns_sanitizer
 
@@ -11,7 +16,7 @@ table bridge bridge_ipv6_dns_sanitizer {
 	chain vxlan_ingress {
 		type filter hook prerouting priority filter; policy accept;
 
-		meta iifkind "vxlan" icmpv6 type nd-router-advert counter queue num 100 bypass comment "sanitize remote IPv6 router advertisements"
-		meta iifkind "vxlan" udp sport 547 udp dport 546 counter queue num 100 bypass comment "sanitize direct DHCPv6 server replies"
+		meta iifkind "vxlan" icmpv6 type nd-router-advert counter queue num $sanitizer_queue bypass comment "sanitize remote IPv6 router advertisements"
+		meta iifkind "vxlan" udp sport $dhcpv6_server_port udp dport $dhcpv6_client_port counter queue num $sanitizer_queue bypass comment "sanitize direct DHCPv6 server replies"
 	}
 }

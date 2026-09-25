@@ -1,4 +1,5 @@
 #include "packet.h"
+#include "constants.h"
 
 #include <climits>
 #include <cstring>
@@ -7,9 +8,6 @@
 #include <tins/endianness.h>
 #include <tins/ipv6_address.h>
 #include <tins/utils/checksum_utils.h>
-
-constexpr unsigned int IPV6_WIRE_VERSION = 6U;
-constexpr unsigned int IPV6_VERSION_FIELD_BITS = 4U;
 
 uint16_t read_be16(const uint8_t *p)
 {
@@ -125,8 +123,8 @@ static uint16_t ipv6_upperlayer_checksum(
     );
 
     sum += Tins::Utils::sum_range(data, data + data_len);
-    while (sum >> 16U) {
-        sum = (sum & UINT16_MAX) + (sum >> 16U);
+    while (sum >> CHECKSUM_WORD_BITS) {
+        sum = (sum & UINT16_MAX) + (sum >> CHECKSUM_WORD_BITS);
     }
 
     return Tins::Endian::be_to_host(static_cast<uint16_t>(~sum));

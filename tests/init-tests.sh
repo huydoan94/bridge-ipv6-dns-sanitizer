@@ -13,6 +13,7 @@ TEST_RULESET=
 TEST_NFT_STATUS=0
 PROCD_OPENED=0
 PROCD_COMMAND=
+PROCD_RESPAWN=
 LOG_MESSAGES=
 
 config_load()
@@ -56,6 +57,7 @@ procd_set_param()
 	local name="$1"
 	shift
 	[ "$name" = command ] && PROCD_COMMAND="$*"
+	[ "$name" = respawn ] && PROCD_RESPAWN="$*"
 	return 0
 }
 
@@ -102,6 +104,7 @@ reset_test_state()
 	TEST_NFT_STATUS=0
 	PROCD_OPENED=0
 	PROCD_COMMAND=
+	PROCD_RESPAWN=
 	LOG_MESSAGES=
 	NFT_ARGUMENTS=
 }
@@ -138,6 +141,7 @@ start_service
 [ "$PROCD_COMMAND" = "$PROG -q 321 -d fd00::53 -d 2001:db8::53 -v" ] || \
 	fail "configured queue and DNS servers were not passed to the daemon"
 [ -z "$LOG_MESSAGES" ] || fail "matching nftables rule produced a warning"
+[ "$PROCD_RESPAWN" = "3600 5 5" ] || fail "respawn defaults changed"
 
 reset_test_state
 TEST_QUEUE_NUMBER=321

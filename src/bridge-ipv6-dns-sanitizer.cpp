@@ -54,6 +54,7 @@ struct dhcpv6_option_header_wire {
 struct app_ctx {
     bool verbose;
     std::vector<struct in6_addr> dns_servers;
+    std::string configured_dns_log;
     local_dns_cache dns_cache;
     std::vector<uint8_t> packet_buffer;
     std::vector<uint8_t> option_buffer;
@@ -568,8 +569,7 @@ try
     struct ipv6_packet_view ipv6;
     struct ipv6_transport_view transport;
     const std::vector<struct in6_addr> *dns_servers = &ctx->dns_servers;
-    char configured_dns_log[sizeof("configured(10)")];
-    const char *dns_source_log = configured_dns_log;
+    const char *dns_source_log = ctx->configured_dns_log.c_str();
     char endpoints[ENDPOINT_BUFSIZE];
     char detail[DETAIL_BUFSIZE] = "";
     char error[ERROR_BUFSIZE] = "";
@@ -637,9 +637,6 @@ try
         }
         dns_servers = &source->servers;
         dns_source_log = source->description.c_str();
-    } else if (ctx->verbose) {
-        snprintf(configured_dns_log, sizeof(configured_dns_log),
-                 "configured(%zu)", dns_servers->size());
     }
 
     if (dns_servers->size() > 1U) {
@@ -714,7 +711,7 @@ static bool parse_queue_number(const char *text, uint16_t *queue_number)
     try {
         const std::string input(text);
         size_t parsed_length = 0;
-        const int value = std::stoi(input, &parsed_length, 10);
+        const int value = std::stoi(input, &parsed_length);
 
         if (parsed_length != input.length() || value < 0 || value > UINT16_MAX)
             return false;
@@ -774,7 +771,8 @@ int main(int argc, char **argv)
         }
         case 'q':
             if (!parse_queue_number(optarg, &queue_number)) {
-                log_error("invalid queue number '%s'; expected 0-65535", optarg);
+                log_error("invalid queue number '%s'; expected 0-%u",
+                          optarg, static_cast<unsigned int>(UINT16_MAX));
                 usage(argv[0]);
                 return EXIT_FAILURE;
             }
@@ -803,6 +801,8 @@ int main(int argc, char **argv)
         usage(argv[0]);
         return EXIT_FAILURE;
     }
+
+    ctx.configured_dns_log = "configured(" + std::to_string(ctx.dns_servers.size()) + ")";
 
     log_info("starting version %s", PROGRAM_VERSION);
     if (!ctx.dns_servers.empty())

@@ -317,6 +317,7 @@ struct nfq_stub_state {
     bool open_succeeds;
     bool create_queue_succeeds;
     uint16_t queue_number;
+    std::string configured_dns_log;
     int queue_flags_result;
     int mode_result;
     int maxlen_result;
@@ -379,6 +380,7 @@ void reset_stubs()
     nfq_stub.open_succeeds = true;
     nfq_stub.create_queue_succeeds = true;
     nfq_stub.queue_number = 0;
+    nfq_stub.configured_dns_log.clear();
     nfq_stub.queue_flags_result = 0;
     nfq_stub.mode_result = 0;
     nfq_stub.maxlen_result = 0;
@@ -556,7 +558,7 @@ struct nfq_q_handle *nfq_create_queue(struct nfq_handle *handle, uint16_t num,
     (void)handle;
     nfq_stub.queue_number = num;
     (void)callback;
-    (void)data;
+    nfq_stub.configured_dns_log = static_cast<app_ctx *>(data)->configured_dns_log;
     return nfq_stub.create_queue_succeeds ? reinterpret_cast<struct nfq_q_handle *>(1) : nullptr;
 }
 
@@ -2001,9 +2003,19 @@ void test_startup_logging()
     expect_text_contains(output.c_str(),
                          "using 2 configured DNS server(s)\n");
     EXPECT(nfq_stub.queue_number == 321U);
+    EXPECT(nfq_stub.configured_dns_log == "configured(2)");
     expect_text_contains(output.c_str(), "stopping\n");
     expect_text_contains(output.c_str(), "exiting\n");
     EXPECT(output.find("bridge-ipv6-dns-sanitizer:") == std::string::npos);
+
+    reset_stubs();
+    std::vector<std::string> arguments = { "daemon", "-q", "100", "-v" };
+    for (unsigned int i = 0; i < 10U; ++i) {
+        arguments.push_back("-d");
+        arguments.push_back("fd00::53");
+    }
+    EXPECT(run_daemon(arguments) == EXIT_SUCCESS);
+    EXPECT(nfq_stub.configured_dns_log == "configured(10)");
 }
 
 void test_signal_and_cli_paths()

@@ -71,8 +71,8 @@ static void format_ipv6(const struct in6_addr *addr, char *buf, size_t len)
 static void format_destination(const struct in6_addr *addr,
                                char *buf, size_t len)
 {
-    static const Tins::IPv6Address all_nodes("ff02::1");
-    static const Tins::IPv6Address all_dhcp_agents("ff02::1:2");
+    static const Tins::IPv6Address all_nodes(IPV6_ALL_NODES);
+    static const Tins::IPv6Address all_dhcp_agents(IPV6_ALL_DHCP_AGENTS);
     const Tins::IPv6Address destination(addr->s6_addr);
     const std::string ip = destination.to_string();
 

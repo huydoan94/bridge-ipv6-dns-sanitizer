@@ -5,9 +5,14 @@ USE_PROCD=1
 START=20
 STOP=89
 
-PROG=/usr/sbin/bridge-ipv6-dns-sanitizer
 CONF=bridge-ipv6-dns-sanitizer
+PROG=/usr/sbin/$CONF
 NFT=${NFT:-/usr/sbin/nft}
+QUEUE_NUMBER_MAX=65535
+RESPAWN_THRESHOLD_SECONDS=3600
+RESPAWN_DELAY_SECONDS=5
+RESPAWN_RETRY_LIMIT=5
+DEFAULT_VERBOSE=0
 
 service_log()
 {
@@ -22,7 +27,7 @@ queue_number_valid()
 		''|*[!0-9]*) return 1 ;;
 	esac
 
-	[ "$1" -le 65535 ] 2>/dev/null
+	[ "$1" -le "$QUEUE_NUMBER_MAX" ] 2>/dev/null
 }
 
 nft_queue_rule_exists()
@@ -103,10 +108,10 @@ start_service()
 
 	config_load "$CONF"
 	config_get queue_number main queue_number
-	config_get_bool verbose main verbose 0
+	config_get_bool verbose main verbose "$DEFAULT_VERBOSE"
 
 	if ! queue_number_valid "$queue_number"; then
-		service_log err "required option main.queue_number is missing or outside 0-65535"
+		service_log err "required option main.queue_number is missing or outside 0-$QUEUE_NUMBER_MAX"
 		return 1
 	fi
 
@@ -126,7 +131,7 @@ start_service()
 		procd_append_param command -d "$dns_server"
 	done
 	[ "$verbose" -eq 1 ] && procd_append_param command -v
-	procd_set_param respawn 3600 5 5
+	procd_set_param respawn "$RESPAWN_THRESHOLD_SECONDS" "$RESPAWN_DELAY_SECONDS" "$RESPAWN_RETRY_LIMIT"
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance

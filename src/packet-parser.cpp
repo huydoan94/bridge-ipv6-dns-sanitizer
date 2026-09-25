@@ -1,4 +1,5 @@
 #include "packet-parser.h"
+#include "constants.h"
 
 #include <limits>
 
@@ -6,9 +7,6 @@
 #include <tins/ipv6.h>
 #include <tins/pdu.h>
 #include <tins/udp.h>
-
-constexpr uint16_t DHCPV6_SERVER_PORT = 547U;
-constexpr uint16_t DHCPV6_CLIENT_PORT = 546U;
 
 namespace {
 
@@ -38,7 +36,7 @@ parse_ipv6_transport(uint8_t *packet, size_t packet_len,
         const Tins::PDU *inner;
         size_t transport_offset;
 
-        if (ipv6.version() != 6)
+        if (ipv6.version() != IPV6_WIRE_VERSION)
             return IPV6_TRANSPORT_OTHER;
 
         /*

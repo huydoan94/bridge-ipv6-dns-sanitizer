@@ -14,8 +14,8 @@
 
 static bool get_bridge_master(const std::string& interface_name, std::string& master)
 {
-    const std::string path = "/sys/class/net/" + interface_name + "/master";
-    char target[256];
+    const std::string path = SYSFS_NETWORK_DIRECTORY + interface_name + SYSFS_BRIDGE_MASTER_LINK;
+    char target[SYSFS_LINK_BUFSIZE];
     const ssize_t length = readlink(path.c_str(), target, sizeof(target) - 1U);
     if (length <= 0 || static_cast<size_t>(length) == sizeof(target) - 1U)
         return false;
@@ -49,7 +49,7 @@ static std::map<uint32_t, local_dns_source> discover_local_dns(
             interface.index = static_cast<uint32_t>(link->sll_ifindex);
         } else if (item->ifa_addr->sa_family == AF_INET6 && interface.servers.empty()) {
             const auto *ipv6 = reinterpret_cast<const sockaddr_in6 *>(item->ifa_addr);
-            if ((ipv6->sin6_addr.s6_addr[0] & 0xfeU) == 0xfcU)
+            if ((ipv6->sin6_addr.s6_addr[0] & IPV6_ULA_PREFIX_MASK) == IPV6_ULA_PREFIX_VALUE)
                 interface.servers.push_back(ipv6->sin6_addr);
         }
     }
