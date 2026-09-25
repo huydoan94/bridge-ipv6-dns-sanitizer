@@ -79,7 +79,7 @@ procd_add_reload_trigger()
 	return 0
 }
 
-. "$PROJECT_DIR/files/bridge-ipv6-dns-sanitizer.init"
+. "$PROJECT_DIR/files/l2dns6rw.init"
 
 fail()
 {

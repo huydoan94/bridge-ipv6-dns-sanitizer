@@ -5,7 +5,7 @@ USE_PROCD=1
 START=20
 STOP=89
 
-CONF=bridge-ipv6-dns-sanitizer
+CONF=l2dns6rw
 PROG=/usr/sbin/$CONF
 NFT=${NFT:-/usr/sbin/nft}
 QUEUE_NUMBER_MAX=65535

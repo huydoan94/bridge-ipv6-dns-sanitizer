@@ -1,4 +1,4 @@
-# bridge-ipv6-dns-sanitizer
+# l2dns6rw
 
 Small OpenWrt daemon that sanitizes IPv6 Router Advertisements and DHCPv6
 server replies received through VXLAN before they reach local clients.
@@ -63,7 +63,7 @@ removes deleted interfaces and prevents reuse of cached DNS when an interface
 index belongs to a different interface name.
 
 The daemon saves a human-readable snapshot (interface index and DNS source) in
-an owner-only `/tmp/bridge-ipv6-dns-XXXXXX` file and logs its actual path.
+an owner-only `/tmp/l2dns6rw-dns-XXXXXX` file and logs its actual path.
 It writes only when the snapshot changes, retries failed writes on the next
 refresh, and removes the file on normal shutdown. The file is diagnostic: it
 is never read per packet or trusted across restarts. A write failure does not
@@ -138,8 +138,8 @@ make package/vxlan-ipv6-sanitize/compile V=s
 Install the generated `.ipk`, then enable and start the service:
 
 ```sh
-/etc/init.d/bridge-ipv6-dns-sanitizer enable
-/etc/init.d/bridge-ipv6-dns-sanitizer start
+/etc/init.d/l2dns6rw enable
+/etc/init.d/l2dns6rw start
 ```
 
 ## nftables
@@ -154,7 +154,7 @@ This check does not modify the ruleset.
 An example is included at:
 
 ```text
-examples/90-bridge-ipv6-dns-sanitizer.nft
+examples/90-l2dns6rw.nft
 ```
 
 Example rules:
@@ -182,7 +182,7 @@ separately by the kernel.
 OpenWrt configuration file:
 
 ```text
-/etc/config/bridge-ipv6-dns-sanitizer
+/etc/config/l2dns6rw
 ```
 
 Default:
@@ -207,43 +207,43 @@ active. Up to 10 DNS servers may be configured.
 Configure a DNS list and restart the service:
 
 ```sh
-uci add_list bridge-ipv6-dns-sanitizer.main.dns_server='fd00::53'
-uci add_list bridge-ipv6-dns-sanitizer.main.dns_server='2001:db8::53'
-uci commit bridge-ipv6-dns-sanitizer
-/etc/init.d/bridge-ipv6-dns-sanitizer restart
+uci add_list l2dns6rw.main.dns_server='fd00::53'
+uci add_list l2dns6rw.main.dns_server='2001:db8::53'
+uci commit l2dns6rw
+/etc/init.d/l2dns6rw restart
 ```
 
 Delete the list to return to automatic local-ULA discovery:
 
 ```sh
-uci -q delete bridge-ipv6-dns-sanitizer.main.dns_server
+uci -q delete l2dns6rw.main.dns_server
 ```
 
 Enable verbose packet logging:
 
 ```sh
-uci set bridge-ipv6-dns-sanitizer.main.verbose='1'
-uci commit bridge-ipv6-dns-sanitizer
-/etc/init.d/bridge-ipv6-dns-sanitizer restart
+uci set l2dns6rw.main.verbose='1'
+uci commit l2dns6rw
+/etc/init.d/l2dns6rw restart
 ```
 
 Change the queue number and restart the service after updating the corresponding
 nftables rules:
 
 ```sh
-uci set bridge-ipv6-dns-sanitizer.main.queue_number='200'
-uci commit bridge-ipv6-dns-sanitizer
-/etc/init.d/bridge-ipv6-dns-sanitizer restart
+uci set l2dns6rw.main.queue_number='200'
+uci commit l2dns6rw
+/etc/init.d/l2dns6rw restart
 ```
 
 ## Logs
 
 ```sh
-logread -f -e bridge-ipv6-dns-sanitizer
+logread -f -e l2dns6rw
 ```
 
 At startup, the daemon reports its packaged version. The message text omits the
-redundant `bridge-ipv6-dns-sanitizer:` prefix because procd already identifies
+redundant `l2dns6rw:` prefix because procd already identifies
 the process in the system log.
 
 ## Formatting
@@ -261,7 +261,7 @@ long expressions should be split where doing so improves readability.
 ```text
 .clang-format             project C++ formatting rules
 src/
-├── bridge-ipv6-dns-sanitizer.cpp daemon and packet sanitizers
+├── l2dns6rw.cpp daemon and packet sanitizers
 ├── constants.h                     shared application and protocol constants
 ├── network.cpp             interface and local-address discovery
 ├── network.h

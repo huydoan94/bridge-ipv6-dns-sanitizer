@@ -77,7 +77,7 @@ static ssize_t test_recv(int sockfd, void *buf, size_t len, int flags);
 #define main bridge_ipv6_dns_sanitizer_daemon_main
 #define poll test_poll
 #define recv test_recv
-#include "../src/bridge-ipv6-dns-sanitizer.cpp"
+#include "../src/l2dns6rw.cpp"
 #undef recv
 #undef poll
 #undef main
@@ -2006,7 +2006,7 @@ void test_startup_logging()
     EXPECT(nfq_stub.configured_dns_log == "configured(2)");
     expect_text_contains(output.c_str(), "stopping\n");
     expect_text_contains(output.c_str(), "exiting\n");
-    EXPECT(output.find("bridge-ipv6-dns-sanitizer:") == std::string::npos);
+    EXPECT(output.find("l2dns6rw:") == std::string::npos);
 
     reset_stubs();
     std::vector<std::string> arguments = { "daemon", "-q", "100", "-v" };

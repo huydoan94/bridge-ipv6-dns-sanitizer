@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  PACKAGE_NAME: bridge-ipv6-dns-sanitizer
+  PACKAGE_NAME: l2dns6rw
   OPENWRT_REF: openwrt-25.12
   SDK_VERSION_SUFFIX: "-openwrt-25.12"
 
@@ -53,14 +53,14 @@ jobs:
       # it one level deep for <pkgname>/Makefile. Checking out straight
       # into the workspace root put Makefile at the root itself (too
       # shallow to be seen as a package) -> "No rule to make target
-      # 'package/bridge-ipv6-dns-sanitizer/download'". Checking out into a subfolder
-      # named after the package fixes it: workspace/bridge-ipv6-dns-sanitizer/Makefile.
+      # 'package/l2dns6rw/download'". Checking out into a subfolder
+      # named after the package fixes it: workspace/l2dns6rw/Makefile.
       - uses: actions/checkout@v4
         with:
           path: ${{ env.PACKAGE_NAME }}
           fetch-depth: 0
 
-      - name: Build bridge-ipv6-dns-sanitizer for ${{ matrix.arch }}
+      - name: Build l2dns6rw for ${{ matrix.arch }}
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.arch }}${{ env.SDK_VERSION_SUFFIX }}
@@ -68,7 +68,7 @@ jobs:
           NO_REFRESH_CHECK: true
           IGNORE_ERRORS: n
 
-      - name: Collect bridge-ipv6-dns-sanitizer packages
+      - name: Collect l2dns6rw packages
         env:
           PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
@@ -76,7 +76,7 @@ jobs:
           mkdir -p dist
           while IFS= read -r -d '' package; do
             cp "$package" "dist/${PACKAGE_ARCH}_$(basename "$package")"
-          done < <(find "bin/packages/$PACKAGE_ARCH" -type f \( -name 'bridge-ipv6-dns-sanitizer-*.apk' -o -name 'bridge-ipv6-dns-sanitizer_*.ipk' \) -print0)
+          done < <(find "bin/packages/$PACKAGE_ARCH" -type f \( -name 'l2dns6rw-*.apk' -o -name 'l2dns6rw_*.ipk' \) -print0)
           test -n "$(find dist -type f -print -quit)"
 
       - name: Upload packages

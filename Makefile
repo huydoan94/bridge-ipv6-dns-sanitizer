@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=bridge-ipv6-dns-sanitizer
-PKG_VERSION:=1.6.8
+PKG_NAME:=l2dns6rw
+PKG_VERSION:=1.6.10
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -10,14 +10,14 @@ PKG_BUILD_DEPENDS:=libnetfilter-queue libtins
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/bridge-ipv6-dns-sanitizer
+define Package/l2dns6rw
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=Bridge IPv6 DNS sanitizer
 	DEPENDS:=+kmod-nft-queue +libnetfilter-queue +libtins +nftables
 endef
 
-define Package/bridge-ipv6-dns-sanitizer/description
+define Package/l2dns6rw/description
 	NFQUEUE sanitizer for bridged VXLAN IPv6 configuration traffic. It
 	preserves Router Advertisement prefix/route information and DHCPv6
 	address assignments, neutralizes remote RA default-router lifetime,
@@ -26,11 +26,11 @@ define Package/bridge-ipv6-dns-sanitizer/description
 	and removes advertised DNS search lists.
 endef
 
-define Package/bridge-ipv6-dns-sanitizer/conffiles
-/etc/config/bridge-ipv6-dns-sanitizer
+define Package/l2dns6rw/conffiles
+/etc/config/l2dns6rw
 endef
 
-SANITIZE_SOURCES := logging.cpp network.cpp packet.cpp packet-parser.cpp bridge-ipv6-dns-sanitizer.cpp
+SANITIZE_SOURCES := logging.cpp network.cpp packet.cpp packet-parser.cpp l2dns6rw.cpp
 SANITIZE_WARNINGS := -Wall -Wextra -Wpedantic -Wformat=2 -Wshadow -Wconversion -Werror
 
 TARGET_CXXFLAGS += -Os $(SANITIZE_WARNINGS) -std=gnu++11 -ffunction-sections -fdata-sections
@@ -47,23 +47,23 @@ define Build/Compile
 	$(TARGET_CXX) \
 		$(TARGET_CXXFLAGS) \
 		$(TARGET_CPPFLAGS) \
-		-o $(PKG_BUILD_DIR)/bridge-ipv6-dns-sanitizer \
+		-o $(PKG_BUILD_DIR)/l2dns6rw \
 		$(addprefix $(PKG_BUILD_DIR)/,$(SANITIZE_SOURCES)) \
 		$(TARGET_LDFLAGS) \
 		-lnetfilter_queue \
 		-ltins
 endef
 
-define Package/bridge-ipv6-dns-sanitizer/install
+define Package/l2dns6rw/install
 	$(INSTALL_DIR) $(1)/usr/sbin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bridge-ipv6-dns-sanitizer \
-		$(1)/usr/sbin/bridge-ipv6-dns-sanitizer
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/l2dns6rw \
+		$(1)/usr/sbin/l2dns6rw
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/bridge-ipv6-dns-sanitizer.init \
-		$(1)/etc/init.d/bridge-ipv6-dns-sanitizer
+	$(INSTALL_BIN) ./files/l2dns6rw.init \
+		$(1)/etc/init.d/l2dns6rw
 	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_CONF) ./files/bridge-ipv6-dns-sanitizer.config \
-		$(1)/etc/config/bridge-ipv6-dns-sanitizer
+	$(INSTALL_CONF) ./files/l2dns6rw.config \
+		$(1)/etc/config/l2dns6rw
 endef
 
-$(eval $(call BuildPackage,bridge-ipv6-dns-sanitizer))
+$(eval $(call BuildPackage,l2dns6rw))
