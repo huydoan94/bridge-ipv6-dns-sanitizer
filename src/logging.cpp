@@ -16,15 +16,20 @@
 
 constexpr size_t DESTINATION_TEXT_BUFSIZE = INET6_ADDRSTRLEN + sizeof("(all-dhcp-agents)");
 
+static void log_message(FILE *stream, const char *fmt, va_list args)
+{
+    vfprintf(stream, fmt, args);
+    fputc('\n', stream);
+    fflush(stream);
+}
+
 void log_info(const char *fmt, ...)
 {
     va_list args;
 
     va_start(args, fmt);
-    vfprintf(stdout, fmt, args);
+    log_message(stdout, fmt, args);
     va_end(args);
-    fputc('\n', stdout);
-    fflush(stdout);
 }
 
 void log_error(const char *fmt, ...)
@@ -32,10 +37,8 @@ void log_error(const char *fmt, ...)
     va_list args;
 
     va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
+    log_message(stderr, fmt, args);
     va_end(args);
-    fputc('\n', stderr);
-    fflush(stderr);
 }
 
 void set_error(char *buf, size_t len, const char *fmt, ...)

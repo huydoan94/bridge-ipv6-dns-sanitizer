@@ -20,13 +20,7 @@ fi
 
 VERSION_CPPFLAG="-DBRIDGE_IPV6_DNS_SANITIZER_VERSION=\"$PROGRAM_VERSION\""
 
-libtins_has_required_api()
-{
-	prefix=$1
-	[ -f "$prefix/include/tins/constants.h" ] &&
-		grep -q "struct fragment_header" "$prefix/include/tins/ipv6.h" 2>/dev/null &&
-		grep -q "class invalid_ipv6_extension_header" "$prefix/include/tins/exceptions.h" 2>/dev/null
-}
+. "$TEST_DIR/libtins-common.sh"
 
 if [ -z "${LIBTINS_PREFIX+x}" ]; then
 	if libtins_has_required_api "$LOCAL_LIBTINS_PREFIX"; then
@@ -40,15 +34,8 @@ if [ -z "${LIBTINS_PREFIX+x}" ]; then
 	fi
 fi
 
-if [ ! -f "$LIBTINS_PREFIX/include/tins/constants.h" ]; then
-	echo "libtins development headers not found under $LIBTINS_PREFIX/include" >&2
-	echo "Unset LIBTINS_PREFIX to let the runner build a native copy automatically." >&2
-	exit 1
-fi
-
-if ! grep -q "struct fragment_header" "$LIBTINS_PREFIX/include/tins/ipv6.h" ||
-	! grep -q "class invalid_ipv6_extension_header" "$LIBTINS_PREFIX/include/tins/exceptions.h"; then
-	echo "The host libtins under $LIBTINS_PREFIX is older than the production libtins API." >&2
+if ! libtins_has_required_api "$LIBTINS_PREFIX"; then
+	echo "Compatible libtins development headers not found under $LIBTINS_PREFIX/include" >&2
 	echo "Unset LIBTINS_PREFIX to let the runner build a matching native copy automatically." >&2
 	exit 1
 fi

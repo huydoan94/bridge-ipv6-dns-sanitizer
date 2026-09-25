@@ -175,6 +175,23 @@ static uint16_t preserve_checksum_state(uint16_t correct,
     return wire_value;
 }
 
+// The wire payload is identical for RDNSS and DHCPv6 DNS options.
+static bool append_dns_addresses(
+    std::vector<uint8_t>& output,
+    const uint8_t *original,
+    size_t original_len,
+    const std::vector<struct in6_addr>& dns_servers
+)
+{
+    const uint8_t *addresses = reinterpret_cast<const uint8_t *>(dns_servers.data());
+    const size_t dns_bytes = dns_servers.size() * sizeof(struct in6_addr);
+    const bool changed = original_len != dns_bytes ||
+        memcmp(original, addresses, dns_bytes) != 0;
+
+    output.insert(output.end(), addresses, addresses + dns_bytes);
+    return changed;
+}
+
 static enum sanitize_result
 sanitize_ra(struct ipv6_packet_view *packet,
             const struct ipv6_transport_view *transport,
@@ -255,11 +272,8 @@ sanitize_ra(struct ipv6_packet_view *packet,
 
         cursor += opt_len;
 
-        if (header->nd_opt_type == Tins::ICMPv6::RSA_SIGN) {
+        if (header->nd_opt_type == Tins::ICMPv6::RSA_SIGN)
             send_signed = true;
-            output.insert(output.end(), opt, opt + opt_len);
-            continue;
-        }
 
         if (header->nd_opt_type == ND_OPTION_PVD) {
             pvd_removed++;
@@ -298,14 +312,11 @@ sanitize_ra(struct ipv6_packet_view *packet,
                 continue;
             }
 
-            rdnss_rewritten = opt_len != configured_len ||
-                memcmp(opt + fixed_len, dns_servers.data(), dns_bytes) != 0;
-
             header->nd_opt_len = static_cast<uint8_t>(
                 configured_len / NDP_OPTION_LEN_UNIT_OCTETS);
             output.insert(output.end(), opt, opt + fixed_len);
-            const uint8_t *addresses = reinterpret_cast<const uint8_t *>(dns_servers.data());
-            output.insert(output.end(), addresses, addresses + dns_bytes);
+            rdnss_rewritten = append_dns_addresses(
+                output, opt + fixed_len, address_bytes, dns_servers);
             kept_rdnss = true;
             continue;
         }
@@ -333,7 +344,6 @@ sanitize_ra(struct ipv6_packet_view *packet,
     }
 
     icmp_len = sizeof(*ra) + output.size();
-    ra = (struct nd_router_advert *)icmp_bytes;
     ra->nd_ra_cksum = 0;
     new_checksum = icmpv6_checksum(ip6h, icmp_bytes, icmp_len);
     ra->nd_ra_cksum = htons(preserve_checksum_state(new_checksum,
@@ -390,8 +400,6 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
         return SANITIZE_UNCHANGED;
 
     udp_len = ntohs(udp->len);
-    if (udp_len == 0)
-        return SANITIZE_UNCHANGED;
     if (udp_len < sizeof(*udp))
         return SANITIZE_UNCHANGED;
     if ((size_t)udp_len > available_udp_len) {
@@ -433,11 +441,8 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
 
         cursor += option.total_len;
 
-        if (option.code == Tins::DHCPv6::AUTH) {
+        if (option.code == Tins::DHCPv6::AUTH)
             authenticated = true;
-            output.insert(output.end(), option.start, cursor);
-            continue;
-        }
 
         if (log_details && option.code == Tins::DHCPv6::CLIENTID && client_id[0] == '\0') {
             format_dhcpv6_client_log_fields(option.data, option.data_len,
@@ -475,15 +480,13 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
                 continue;
             }
 
-            dns_rewritten = option.data_len != dns_bytes ||
-                memcmp(option.data, dns_servers.data(), dns_bytes) != 0;
             opt = option.start;
 
             header = (struct dhcpv6_option_header_wire *)opt;
             header->length = htons(static_cast<uint16_t>(dns_bytes));
             output.insert(output.end(), opt, opt + fixed_len);
-            const uint8_t *addresses = reinterpret_cast<const uint8_t *>(dns_servers.data());
-            output.insert(output.end(), addresses, addresses + dns_bytes);
+            dns_rewritten = append_dns_addresses(
+                output, option.data, option.data_len, dns_servers);
             kept_dns = true;
             continue;
         }
@@ -626,7 +629,8 @@ static int packet_cb(struct nfq_q_handle *qh,
         return drop_packet(qh, id);
     }
 
-    if (transport.packet_type == Tins::PDU::UNKNOWN)
+    if (transport.packet_type != Tins::PDU::ICMPv6 &&
+        transport.packet_type != Tins::PDU::DHCPv6)
         return accept_unchanged(qh, id);
 
     if (ctx->verbose)
@@ -659,28 +663,14 @@ static int packet_cb(struct nfq_q_handle *qh,
     skbinfo = nfq_get_skbinfo(nfa);
     checksum_not_ready = (skbinfo & NFQA_SKB_CSUMNOTREADY) != 0U;
 
-    switch (transport.packet_type) {
-    case Tins::PDU::ICMPv6:
-        result = sanitize_ra(&ipv6, &transport, *dns_servers,
-                             checksum_not_ready,
-                             ctx->verbose ? endpoints : nullptr,
-                             ctx->verbose ? detail : nullptr,
-                             ctx->verbose ? sizeof(detail) : 0U,
-                             error, sizeof(error));
-        break;
-    case Tins::PDU::DHCPv6:
-        result = sanitize_dhcpv6(&ipv6, &transport, *dns_servers,
-                                 checksum_not_ready,
-                                 ctx->verbose ? endpoints : nullptr,
-                                 ctx->verbose ? detail : nullptr,
-                                 ctx->verbose ? sizeof(detail) : 0U,
-                                 error, sizeof(error));
-        break;
-    case Tins::PDU::UNKNOWN:
-    default:
-        result = SANITIZE_UNCHANGED;
-        break;
-    }
+    const auto sanitize = transport.packet_type == Tins::PDU::ICMPv6 ?
+        sanitize_ra : sanitize_dhcpv6;
+    result = sanitize(&ipv6, &transport, *dns_servers,
+                      checksum_not_ready,
+                      ctx->verbose ? endpoints : nullptr,
+                      ctx->verbose ? detail : nullptr,
+                      ctx->verbose ? sizeof(detail) : 0U,
+                      error, sizeof(error));
 
     if (result == SANITIZE_ERROR) {
         log_error("id=%u: %s; ACCEPT unchanged",

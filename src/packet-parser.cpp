@@ -2,7 +2,6 @@
 
 #include <limits>
 
-#include <tins/exceptions.h>
 #include <tins/icmpv6.h>
 #include <tins/ipv6.h>
 #include <tins/pdu.h>
@@ -96,12 +95,6 @@ parse_ipv6_transport(uint8_t *packet, size_t packet_len,
         transport->header = packet + transport_offset;
         transport->len = packet_len - transport_offset;
         return IPV6_TRANSPORT_FOUND;
-    }
-    catch (const Tins::malformed_packet&) {
-        return IPV6_TRANSPORT_MALFORMED;
-    }
-    catch (const Tins::invalid_ipv6_extension_header&) {
-        return IPV6_TRANSPORT_MALFORMED;
     }
     catch (...) {
         /* Parser failures are fail-open at the caller. */

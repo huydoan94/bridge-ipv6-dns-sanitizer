@@ -12,6 +12,8 @@ HOST_LIBTINS_PREFIX=${HOST_LIBTINS_PREFIX:-$DEFAULT_HOST_LIBTINS_PREFIX}
 CMAKE=${CMAKE:-cmake}
 MAKE=${MAKE:-make}
 
+. "$TEST_DIR/libtins-common.sh"
+
 find_libtins_source()
 {
 	find "$OPENWRT_ROOT/build_dir" \
@@ -21,8 +23,7 @@ find_libtins_source()
 	while IFS= read -r ipv6_header; do
 		candidate=${ipv6_header%/include/tins/ipv6.h}
 		if [ -f "$candidate/CMakeLists.txt" ] &&
-			grep -q "struct fragment_header" "$ipv6_header" 2>/dev/null &&
-			grep -q "class invalid_ipv6_extension_header" "$candidate/include/tins/exceptions.h" 2>/dev/null; then
+			libtins_has_required_api "$candidate"; then
 			CDPATH= cd -- "$candidate"
 			pwd -P
 			break
