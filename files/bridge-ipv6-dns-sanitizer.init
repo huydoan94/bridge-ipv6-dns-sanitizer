@@ -68,19 +68,29 @@ nft_ruleset_has_queue()
 {
 	local queue_number="$1"
 	local line
+	local in_queue
 
 	set -f
 	while IFS= read -r line; do
 		set -- $line
-		while [ "$#" -ge 3 ]; do
-			if [ "$1" = queue ] && [ "$2" = num ] && \
-				queue_spec_matches "$queue_number" "$3"; then
-				return 0
+		in_queue=
+		while [ "$#" -gt 0 ]; do
+			if [ -n "$in_queue" ]; then
+				case "$1" in
+					num|to)
+						if [ "$#" -ge 2 ] && queue_spec_matches "$queue_number" "$2"; then
+							set +f
+							return 0
+						fi
+						;;
+				esac
+			elif [ "$1" = queue ]; then
+				in_queue=1
 			fi
 			shift
 		done
 	done
-
+	set +f
 	return 1
 }
 
@@ -89,13 +99,13 @@ check_nft_queue()
 	local queue_number="$1"
 	local status
 
-	if nft_queue_rule_exists "$queue_number"; then
-		return 0
-	else
-		status=$?
-	fi
+	nft_queue_rule_exists "$queue_number"
+	status=$?
 
-	if [ "$status" -eq 1 ]; then
+	if [ "$status" -eq 0 ]; then
+		service_log info "nftables rule found for NFQUEUE $queue_number"
+		return 0
+	elif [ "$status" -eq 1 ]; then
 		service_log warn "no nftables rule queues packets to NFQUEUE $queue_number; continuing"
 	else
 		service_log warn "could not inspect nftables rules for NFQUEUE $queue_number; continuing"

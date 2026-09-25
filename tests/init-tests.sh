@@ -165,6 +165,16 @@ start_service
 
 reset_test_state
 TEST_QUEUE_NUMBER=321
+TEST_RULESET='table inet fw4 {
+	chain forward {
+		icmpv6 type 134 queue flags bypass to 321
+	}
+}'
+start_service
+[ -z "$LOG_MESSAGES" ] || fail "modern nftables queue syntax produced a warning"
+
+reset_test_state
+TEST_QUEUE_NUMBER=321
 TEST_RULESET='table bridge test {
 	chain input {
 		queue num 100 bypass
