@@ -17,6 +17,10 @@ The suite covers:
   failures
 - NFQUEUE callback accept/drop/change/fail-open decisions
 - configured multi-server DNS rewriting with packet expansion
+- automatic DNS snapshots, bridge fallback, refresh/retry timing, interface
+  removal/index reuse, last-known DNS fallback, temporary-file permissions/cleanup,
+  persistence failure, and allocation failure
+- repeated callbacks without network discovery and with reusable buffers
 - daemon argument, setup, poll, receive, and cleanup paths
 - formatting helpers, address lists, DUIDs, and transaction IDs
 - required UCI queue-number and optional DNS-list validation and procd arguments
@@ -78,6 +82,16 @@ Run with AddressSanitizer and UndefinedBehaviorSanitizer:
 ```sh
 SANITIZERS=1 ./tests/run-tests.sh
 ```
+
+Run the synthetic packet-path benchmark after a normal test build:
+
+```sh
+./tests/build/unit-tests --benchmark
+```
+
+It reports time and C++ allocations per packet after warm-up for unchanged RA,
+rewritten RA, and rewritten DHCPv6 packets. NFQUEUE I/O is mocked, so this is
+a repeatable code-path comparison, not a router throughput measurement.
 
 The suite is host-side. It does not replace an OpenWrt integration test that
 loads a real nftables rule, sends packets through the configured NFQUEUE, and

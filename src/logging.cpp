@@ -2,6 +2,7 @@
 
 #include "packet.h"
 
+#include <arpa/inet.h>
 #include <limits.h>
 #include <net/if_arp.h>
 #include <stdarg.h>
@@ -63,10 +64,8 @@ static void format_mac(const uint8_t *mac, char *buf, size_t len)
 
 static void format_ipv6(const struct in6_addr *addr, char *buf, size_t len)
 {
-    const std::string text = Tins::IPv6Address(addr->s6_addr).to_string();
-
     if (len != 0)
-        snprintf(buf, len, "%s", text.c_str());
+        inet_ntop(AF_INET6, addr, buf, static_cast<socklen_t>(len));
 }
 
 static void format_destination(const struct in6_addr *addr,
@@ -118,15 +117,14 @@ void addr_list_init(struct addr_list *list)
 
 static void addr_list_append(struct addr_list *list, const struct in6_addr *addr)
 {
-    const std::string ip = Tins::IPv6Address(addr->s6_addr).to_string();
+    if (list->truncated)
+        return;
+    char ip[INET6_ADDRSTRLEN];
+    format_ipv6(addr, ip, sizeof(ip));
     char piece[INET6_ADDRSTRLEN + sizeof(",")];
     int n;
 
-    if (list->truncated)
-        return;
-
-    n = snprintf(piece, sizeof(piece), "%s%s", list->first ? "" : ",",
-                 ip.c_str());
+    n = snprintf(piece, sizeof(piece), "%s%s", list->first ? "" : ",", ip);
     if (n < 0 || (size_t)n >= sizeof(piece) || list->len + (size_t)n + sizeof(",...]") > sizeof(list->buf)) {
         list->truncated = true;
         return;
@@ -144,7 +142,7 @@ void addr_list_append_wire_ipv6(struct addr_list *list,
     const uint8_t *cursor = data;
     const uint8_t *end = data + data_len;
 
-    while (cursor < end) {
+    while (cursor < end && !list->truncated) {
         struct in6_addr addr;
 
         memcpy(&addr, cursor, sizeof(addr));

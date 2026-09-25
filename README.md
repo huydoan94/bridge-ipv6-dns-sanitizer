@@ -52,6 +52,23 @@ DHCPv6 Advertise/Reply packets (`547 -> 546`):
 When no DNS list is configured, the automatic DNS address is the first ULA
 (`fc00::/7`) found on the ingress interface or its bridge master.
 
+Automatic discovery runs at startup and every five seconds in the event loop,
+not in packet callbacks. Each refresh takes one OS interface/address snapshot
+and resolves bridge membership. Packet processing uses only the in-memory
+lookup. When discovery fails or an existing interface temporarily has no ULA,
+its last successfully cached DNS remains in use and is retried on the next
+refresh. Packets pass unchanged only if neither ingress interface has a cached
+DNS. A newly resolved address replaces the old one. A successful snapshot still
+removes deleted interfaces and prevents reuse of cached DNS when an interface
+index belongs to a different interface name.
+
+The daemon saves a human-readable snapshot (interface index and DNS source) in
+an owner-only `/tmp/bridge-ipv6-dns-XXXXXX` file and logs its actual path.
+It writes only when the snapshot changes, retries failed writes on the next
+refresh, and removes the file on normal shutdown. The file is diagnostic: it
+is never read per packet or trusted across restarts. A write failure does not
+disable the in-memory cache. Configured DNS lists bypass discovery entirely.
+
 ## Packet handling
 
 - IPv6 extension-header traversal and transport discovery are delegated to libtins.
@@ -62,6 +79,10 @@ When no DNS list is configured, the automatic DNS address is the first ULA
 - If IPv6 or UDP declares a shorter region than NFQUEUE captured, only the
   declared region is sanitized. Bytes after it are preserved unchanged.
 - If UDP declares more bytes than are available, the packet is dropped.
+- Packet and option buffers are reused. Outgoing netlink padding is explicitly
+  zeroed, and oversized verdict payloads are rejected.
+- Checksums are calculated only after validation confirms that a packet needs
+  editing. Unchanged, malformed, and protected packets avoid that work.
 - A valid incoming checksum remains valid after sanitization.
 - An invalid incoming checksum remains deliberately invalid after sanitization.
 - NFQUEUE checksum-not-ready packets receive a correct checksum after editing.
@@ -73,7 +94,8 @@ When no DNS list is configured, the automatic DNS address is the first ULA
 ## Build
 
 The daemon uses OpenWrt's `libtins` package for IPv6 protocol parsing, protocol
-constants, interface/address access, formatting, and checksum helpers. It only
+constants, formatting, and checksum helpers. Interface snapshots use the
+platform's getifaddrs API. It only
 needs libtins' core library; libpcap support can be disabled in libtins
 configuration if it is not otherwise needed on the target. The package declares
 `libnetfilter-queue` and `libtins` as explicit build dependencies so their

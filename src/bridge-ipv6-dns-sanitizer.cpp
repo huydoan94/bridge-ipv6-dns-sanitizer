@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include <algorithm>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -53,6 +54,9 @@ struct dhcpv6_option_header_wire {
 struct app_ctx {
     bool verbose;
     std::vector<struct in6_addr> dns_servers;
+    local_dns_cache dns_cache;
+    std::vector<uint8_t> packet_buffer;
+    std::vector<uint8_t> option_buffer;
 };
 
 enum sanitize_result {
@@ -199,11 +203,11 @@ sanitize_ra(struct ipv6_packet_view *packet,
             const std::vector<struct in6_addr>& dns_servers,
             bool checksum_not_ready,
             const char *endpoints, char *detail, size_t detail_len,
-            char *error, size_t error_len)
+            char *error, size_t error_len,
+            std::vector<uint8_t>& output)
 {
     struct ip6_hdr *ip6h = packet->header;
     struct nd_router_advert *ra;
-    std::vector<uint8_t> output;
     uint8_t *cursor;
     uint8_t *icmp_bytes = transport->header;
     uint8_t *options;
@@ -217,7 +221,6 @@ sanitize_ra(struct ipv6_packet_view *packet,
     unsigned int rdnss_deduplicated;
     unsigned int dnssl_removed = 0;
     unsigned int pvd_removed = 0;
-    bool kept_rdnss = false;
     bool send_signed = false;
     bool router_lifetime_changed;
     bool changed;
@@ -232,13 +235,8 @@ sanitize_ra(struct ipv6_packet_view *packet,
     }
 
     ra = (struct nd_router_advert *)icmp_bytes;
-    checksum_state = ra_checksum_state(ip6h, icmp_bytes, icmp_len,
-                                       checksum_not_ready);
-
     original_lifetime = ntohs(ra->nd_ra_router_lifetime);
     router_lifetime_changed = original_lifetime != RA_NEUTRAL_ROUTER_LIFETIME;
-    if (router_lifetime_changed)
-        ra->nd_ra_router_lifetime = htons(RA_NEUTRAL_ROUTER_LIFETIME);
 
     if (log_details)
         addr_list_init(&original_rdnss);
@@ -247,6 +245,8 @@ sanitize_ra(struct ipv6_packet_view *packet,
     options_len = icmp_len - sizeof(*ra);
     options_end = options + options_len;
     cursor = options;
+    output.clear();
+    output.reserve(options_len + dns_servers.size() * sizeof(in6_addr));
 
     while (cursor < options_end) {
         struct nd_opt_hdr *header;
@@ -302,23 +302,23 @@ sanitize_ra(struct ipv6_packet_view *packet,
             address_bytes = opt_len - fixed_len;
             rdnss_addresses += (unsigned int)(address_bytes / sizeof(struct in6_addr));
 
+            ++rdnss_options;
             if (log_details) {
-                rdnss_options++;
                 addr_list_append_wire_ipv6(&original_rdnss,
                                            opt + fixed_len,
                                            address_bytes);
             }
 
-            if (kept_rdnss) {
+            if (rdnss_options > 1U) {
                 continue;
             }
 
-            header->nd_opt_len = static_cast<uint8_t>(
-                configured_len / NDP_OPTION_LEN_UNIT_OCTETS);
+            const size_t header_offset = output.size();
             output.insert(output.end(), opt, opt + fixed_len);
+            output[header_offset + offsetof(nd_opt_hdr, nd_opt_len)] =
+                static_cast<uint8_t>(configured_len / NDP_OPTION_LEN_UNIT_OCTETS);
             rdnss_rewritten = append_dns_addresses(
                 output, opt + fixed_len, address_bytes, dns_servers);
-            kept_rdnss = true;
             continue;
         }
 
@@ -339,11 +339,13 @@ sanitize_ra(struct ipv6_packet_view *packet,
         return SANITIZE_DROP;
     }
 
+    checksum_state = ra_checksum_state(ip6h, icmp_bytes, icmp_len, checksum_not_ready);
     if (ipv6_packet_replace(packet, options, options_len, output) < 0) {
         set_error(error, error_len, "failed to replace RA options");
         return SANITIZE_ERROR;
     }
 
+    ra->nd_ra_router_lifetime = htons(RA_NEUTRAL_ROUTER_LIFETIME);
     icmp_len = sizeof(*ra) + output.size();
     ra->nd_ra_cksum = 0;
     new_checksum = icmpv6_checksum(ip6h, icmp_bytes, icmp_len);
@@ -365,11 +367,11 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
                 const std::vector<struct in6_addr>& dns_servers,
                 bool checksum_not_ready,
                 const char *endpoints, char *detail, size_t detail_len,
-                char *error, size_t error_len)
+                char *error, size_t error_len,
+                std::vector<uint8_t>& output)
 {
     struct ip6_hdr *ip6h = packet->header;
     struct udphdr *udp = (struct udphdr *)transport->header;
-    std::vector<uint8_t> output;
     uint8_t *cursor;
     uint8_t *dhcp;
     struct dhcpv6_direct_header_wire *message;
@@ -377,7 +379,6 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
     uint8_t *options_end;
     size_t available_udp_len = transport->len;
     size_t dhcp_len;
-    size_t new_dhcp_len;
     uint16_t udp_len;
     Tins::DHCPv6::MessageType msg_type;
     const char *message_name;
@@ -386,13 +387,11 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
     unsigned int dns_rewritten = 0;
     unsigned int dns_deduplicated;
     unsigned int domain_search_removed = 0;
-    bool kept_dns = false;
     bool authenticated = false;
     bool changed;
     bool log_details = detail != nullptr && detail_len != 0;
     enum checksum_state checksum_state;
     uint16_t new_checksum;
-    uint8_t transaction_id[DHCPV6_TRANSACTION_ID_LEN] = { 0 };
     char client_id[CLIENT_ID_BUFSIZE] = "";
     char client_mac[MAC_TEXT_BUFSIZE] = "";
     struct addr_list original_dns;
@@ -410,8 +409,6 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
         return SANITIZE_DROP;
     }
 
-    checksum_state = udp_checksum_state(ip6h, udp, udp_len,
-                                        checksum_not_ready);
     dhcp = (uint8_t *)udp + sizeof(*udp);
     dhcp_len = (size_t)udp_len - sizeof(*udp);
 
@@ -424,14 +421,14 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
         return SANITIZE_UNCHANGED;
     message_name = msg_type == Tins::DHCPv6::ADVERTISE ? "Advertise" : "Reply";
 
-    if (log_details) {
-        memcpy(transaction_id, message->transaction_id, sizeof(transaction_id));
+    if (log_details)
         addr_list_init(&original_dns);
-    }
 
     options_start = dhcp + sizeof(*message);
     options_end = dhcp + dhcp_len;
     cursor = options_start;
+    output.clear();
+    output.reserve(dhcp_len + dns_servers.size() * sizeof(in6_addr));
 
     while (cursor < options_end) {
         struct dhcpv6_option_view option;
@@ -457,8 +454,6 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
         }
 
         if (option.code == Tins::DHCPv6::DNS_SERVERS) {
-            struct dhcpv6_option_header_wire *header;
-            uint8_t *opt;
             const size_t fixed_len = sizeof(struct dhcpv6_option_header_wire);
             const size_t dns_bytes = dns_servers.size() * sizeof(struct in6_addr);
             if (option.data_len == 0 || option.data_len % sizeof(struct in6_addr) != 0) {
@@ -470,25 +465,24 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
 
             dns_addresses += (unsigned int)(option.data_len / sizeof(struct in6_addr));
 
+            ++dns_options;
             if (log_details) {
-                dns_options++;
                 addr_list_append_wire_ipv6(&original_dns,
                                            option.data,
                                            option.data_len);
             }
 
-            if (kept_dns) {
+            if (dns_options > 1U) {
                 continue;
             }
 
-            opt = option.start;
-
-            header = (struct dhcpv6_option_header_wire *)opt;
-            header->length = htons(static_cast<uint16_t>(dns_bytes));
-            output.insert(output.end(), opt, opt + fixed_len);
+            const dhcpv6_option_header_wire header = {
+                htons(option.code), htons(static_cast<uint16_t>(dns_bytes))
+            };
+            const uint8_t *header_bytes = reinterpret_cast<const uint8_t *>(&header);
+            output.insert(output.end(), header_bytes, header_bytes + fixed_len);
             dns_rewritten = append_dns_addresses(
                 output, option.data, option.data_len, dns_servers);
-            kept_dns = true;
             continue;
         }
 
@@ -509,16 +503,14 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
         return SANITIZE_DROP;
     }
 
-    new_dhcp_len = sizeof(*message) + output.size();
-    if (
-        new_dhcp_len > UINT16_MAX - sizeof(*udp) ||
-        ipv6_packet_replace(packet, options_start, static_cast<size_t>(options_end - options_start), output) < 0
-    ) {
+    checksum_state = udp_checksum_state(ip6h, udp, udp_len, checksum_not_ready);
+    if (ipv6_packet_replace(packet, options_start, static_cast<size_t>(options_end - options_start), output) < 0) {
         set_error(error, error_len, "failed to replace DHCPv6 options");
         return SANITIZE_ERROR;
     }
 
-    udp_len = static_cast<uint16_t>(sizeof(*udp) + new_dhcp_len);
+    // Successful IPv6 replacement already guarantees this fits in 16 bits.
+    udp_len = static_cast<uint16_t>(sizeof(*udp) + sizeof(*message) + output.size());
     udp->len = htons(udp_len);
     udp->check = 0;
     new_checksum = udp_ipv6_checksum(ip6h, (const uint8_t *)udp, udp_len);
@@ -527,7 +519,7 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
 
     if (log_details)
         format_dhcpv6_log_detail(detail, detail_len, message_name, endpoints,
-                                 transaction_id, client_id, client_mac,
+                                 message->transaction_id, client_id, client_mac,
                                  &original_dns, dns_options, dns_rewritten,
                                  dns_deduplicated, domain_search_removed);
 
@@ -545,17 +537,20 @@ static int drop_packet(struct nfq_q_handle *qh, uint32_t id)
 }
 
 static int verdict_with_modified_ipv6(struct nfq_q_handle *qh, uint32_t id,
-                                      const struct ipv6_packet_view *packet)
+                                      const struct ipv6_packet_view *packet,
+                                      std::vector<uint8_t>& payload)
 {
     if (packet->captured_len > NFQ_MAX_PAYLOAD) {
         errno = EMSGSIZE;
         return -1;
     }
 
-    // libnfnetlink reads the payload rounded up to netlink alignment.
-    // Own and zero the padding, including when the original packet shrank.
-    std::vector<uint8_t> payload(NLA_ALIGN(packet->captured_len), 0);
-    memcpy(payload.data(), packet->data, packet->captured_len);
+    // Reuse the growth buffer directly; otherwise copy only modified packets.
+    const bool already_owned = payload.data() == packet->data;
+    payload.resize(NLA_ALIGN(packet->captured_len));
+    if (!already_owned)
+        memcpy(payload.data(), packet->data, packet->captured_len);
+    std::fill(payload.begin() + packet->captured_len, payload.end(), 0);
     return nfq_set_verdict(qh, id, NF_ACCEPT,
                            static_cast<uint32_t>(packet->captured_len),
                            payload.data());
@@ -572,20 +567,13 @@ try
     unsigned char *payload = nullptr;
     struct ipv6_packet_view ipv6;
     struct ipv6_transport_view transport;
-    struct in6_addr local_dns;
-    std::vector<struct in6_addr> automatic_dns;
-    const std::vector<struct in6_addr> *dns_servers;
-    std::vector<uint8_t> packet_buffer;
-    std::string dns_source_log;
-    char dns_ifname[IF_NAMESIZE] = "";
-    char local_dns_log[LOCAL_DNS_TEXT_BUFSIZE] = "";
+    const std::vector<struct in6_addr> *dns_servers = &ctx->dns_servers;
+    char configured_dns_log[sizeof("configured(10)")];
+    const char *dns_source_log = configured_dns_log;
     char endpoints[ENDPOINT_BUFSIZE];
     char detail[DETAIL_BUFSIZE] = "";
     char error[ERROR_BUFSIZE] = "";
     uint32_t id;
-    uint32_t indev;
-    uint32_t physindev;
-    uint32_t skbinfo;
     int payload_len;
     int verdict;
     bool checksum_not_ready;
@@ -611,13 +599,6 @@ try
         log_error("id=%u: NFQUEUE payload unavailable; ACCEPT unchanged", id);
         return accept_unchanged(qh, id);
     }
-    if (ctx->dns_servers.size() > 1U) {
-        const size_t growth =
-            (ctx->dns_servers.size() - 1U) * sizeof(struct in6_addr);
-        packet_buffer.resize(static_cast<size_t>(payload_len) + growth);
-        memcpy(packet_buffer.data(), payload, static_cast<size_t>(payload_len));
-        payload = packet_buffer.data();
-    }
 
     ipv6_result = parse_nfqueue_ipv6_payload(payload, (size_t)payload_len,
                                              &ipv6);
@@ -628,8 +609,6 @@ try
     }
     if (ipv6_result != IPV6_PACKET_OK)
         return accept_unchanged(qh, id);
-    if (!packet_buffer.empty())
-        ipv6.capacity_end = packet_buffer.data() + packet_buffer.size();
 
     transport_result = parse_ipv6_transport(ipv6.data, ipv6.declared_len,
                                             &transport);
@@ -648,32 +627,36 @@ try
     if (ctx->verbose)
         format_endpoints(ipv6.header, endpoints, sizeof(endpoints));
 
-    dns_servers = &ctx->dns_servers;
     if (dns_servers->empty()) {
-        indev = nfq_get_indev(nfa);
-        physindev = nfq_get_physindev(nfa);
-        if (resolve_local_dns(indev, physindev, &local_dns,
-                              ctx->verbose ? dns_ifname : nullptr,
-                              ctx->verbose ? sizeof(dns_ifname) : 0U) < 0) {
-            log_error("id=%u: no ULA found on ingress interface or bridge master; "
-                      "ACCEPT unchanged", id);
+        const local_dns_source *source = ctx->dns_cache.find(
+            nfq_get_indev(nfa), nfq_get_physindev(nfa));
+        if (source == nullptr) {
+            if (ctx->verbose)
+                log_info("id=%u: no cached ingress ULA; ACCEPT unchanged", id);
             return accept_unchanged(qh, id);
         }
-        automatic_dns.push_back(local_dns);
-        dns_servers = &automatic_dns;
-
-        if (ctx->verbose) {
-            format_local_dns_log(&local_dns, dns_ifname,
-                                 local_dns_log, sizeof(local_dns_log));
-            dns_source_log = local_dns_log;
-        }
+        dns_servers = &source->servers;
+        dns_source_log = source->description.c_str();
     } else if (ctx->verbose) {
-        dns_source_log = "configured(" +
-            std::to_string(dns_servers->size()) + ")";
+        snprintf(configured_dns_log, sizeof(configured_dns_log),
+                 "configured(%zu)", dns_servers->size());
     }
 
-    skbinfo = nfq_get_skbinfo(nfa);
-    checksum_not_ready = (skbinfo & NFQA_SKB_CSUMNOTREADY) != 0U;
+    if (dns_servers->size() > 1U) {
+        const size_t growth = (dns_servers->size() - 1U) * sizeof(in6_addr);
+        const size_t transport_offset = static_cast<size_t>(transport.header - ipv6.data);
+        auto& buffer = ctx->packet_buffer;
+        buffer.resize(NLA_ALIGN(ipv6.captured_len + growth));
+        memcpy(buffer.data(), ipv6.data, ipv6.captured_len);
+        ipv6.data = buffer.data();
+        ipv6.header = reinterpret_cast<ip6_hdr *>(ipv6.data);
+        ipv6.declared_end = ipv6.data + ipv6.declared_len;
+        ipv6.captured_end = ipv6.data + ipv6.captured_len;
+        ipv6.capacity_end = ipv6.data + ipv6.captured_len + growth;
+        transport.header = ipv6.data + transport_offset;
+    }
+
+    checksum_not_ready = (nfq_get_skbinfo(nfa) & NFQA_SKB_CSUMNOTREADY) != 0U;
 
     const auto sanitize = transport.packet_type == Tins::PDU::ICMPv6 ?
         sanitize_ra : sanitize_dhcpv6;
@@ -682,7 +665,7 @@ try
                       ctx->verbose ? endpoints : nullptr,
                       ctx->verbose ? detail : nullptr,
                       ctx->verbose ? sizeof(detail) : 0U,
-                      error, sizeof(error));
+                      error, sizeof(error), ctx->option_buffer);
 
     if (result == SANITIZE_ERROR) {
         log_error("id=%u: %s; ACCEPT unchanged",
@@ -700,9 +683,9 @@ try
 
     if (ctx->verbose)
         log_info("id=%u dns-source=%s %s",
-                 id, dns_source_log.c_str(), detail);
+                 id, dns_source_log, detail);
 
-    verdict = verdict_with_modified_ipv6(qh, id, &ipv6);
+    verdict = verdict_with_modified_ipv6(qh, id, &ipv6, ctx->packet_buffer);
     if (verdict < 0) {
         log_error("id=%u: could not send modified IPv6 verdict (%s); "
                   "ACCEPT unchanged", id, strerror(errno));
@@ -821,10 +804,6 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    /* procd captures these streams; keep every message immediately visible. */
-    setvbuf(stdout, nullptr, _IOLBF, 0);
-    setvbuf(stderr, nullptr, _IONBF, 0);
-
     log_info("starting version %s", PROGRAM_VERSION);
     if (!ctx.dns_servers.empty())
         log_info("using %zu configured DNS server(s)", ctx.dns_servers.size());
@@ -876,9 +855,13 @@ int main(int argc, char **argv)
     pfd.events = POLLIN;
     pfd.revents = 0;
 
+    if (ctx.dns_servers.empty())
+        ctx.dns_cache.refresh();
     log_info("listening on NFQUEUE %u", queue_number);
 
     while (running) {
+        if (ctx.dns_servers.empty())
+            ctx.dns_cache.refresh();
         rv = poll(&pfd, 1, POLL_TIMEOUT_MS);
         if (rv == 0)
             continue;

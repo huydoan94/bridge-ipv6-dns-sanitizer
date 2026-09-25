@@ -8,8 +8,12 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <ifaddrs.h>
+#include <netpacket/packet.h>
+#include <sys/stat.h>
 
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <limits>
 #include <random>
@@ -21,9 +25,11 @@
 // Fail one allocation, then allow the recovery path and verdict recorder to run.
 static int allocations_before_failure = -1;
 static bool allocation_failed = false;
+static size_t allocation_count = 0;
 
 void *operator new(size_t size)
 {
+    ++allocation_count;
     if (allocations_before_failure == 0) {
         allocations_before_failure = -1;
         allocation_failed = true;
@@ -44,14 +50,24 @@ void operator delete(void *memory) noexcept
 #include "../src/network.h"
 #include "../src/packet.h"
 
+static int test_getifaddrs(ifaddrs **addresses);
+static void test_freeifaddrs(ifaddrs *addresses);
+static int test_mkstemp(char *path);
+static size_t test_fwrite(const void *data, size_t size, size_t count, FILE *file);
 static ssize_t test_readlink(const char *path, char *buf, size_t bufsiz);
 static int test_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 static ssize_t test_recv(int sockfd, void *buf, size_t len, int flags);
 
 #define readlink test_readlink
-#define resolve_local_dns real_resolve_local_dns
+#define getifaddrs test_getifaddrs
+#define freeifaddrs test_freeifaddrs
+#define mkstemp test_mkstemp
+#define fwrite test_fwrite
 #include "../src/network.cpp"
-#undef resolve_local_dns
+#undef fwrite
+#undef mkstemp
+#undef freeifaddrs
+#undef getifaddrs
 #undef readlink
 #include "../src/packet.cpp"
 
@@ -311,8 +327,14 @@ struct nfq_stub_state {
 
 nfq_stub_state nfq_stub;
 int resolver_result;
-in6_addr resolver_address;
-std::string resolver_ifname;
+ifaddrs network_rows[4];
+sockaddr_ll network_links[2];
+sockaddr_in6 network_address;
+unsigned int discovery_calls;
+unsigned int discovery_frees;
+bool cache_file_failure;
+bool cache_write_failure;
+unsigned int cache_writes;
 
 enum readlink_mode {
     READLINK_FAIL,
@@ -364,8 +386,28 @@ void reset_stubs()
     nfq_stub.destroy_calls = 0;
     nfq_stub.close_calls = 0;
     resolver_result = 0;
-    resolver_address = address("fd00::53");
-    resolver_ifname = "br-lan";
+    std::memset(network_rows, 0, sizeof(network_rows));
+    std::memset(network_links, 0, sizeof(network_links));
+    network_address = {};
+    network_links[0].sll_family = AF_PACKET;
+    network_links[0].sll_ifindex = 11;
+    network_links[1].sll_family = AF_PACKET;
+    network_links[1].sll_ifindex = 12;
+    network_address.sin6_family = AF_INET6;
+    network_address.sin6_addr = address("fd00::53");
+    network_rows[0].ifa_name = const_cast<char *>("br-lan");
+    network_rows[0].ifa_addr = reinterpret_cast<sockaddr *>(&network_links[0]);
+    network_rows[0].ifa_next = &network_rows[1];
+    network_rows[1].ifa_name = const_cast<char *>("br-lan");
+    network_rows[1].ifa_addr = reinterpret_cast<sockaddr *>(&network_address);
+    network_rows[1].ifa_next = &network_rows[2];
+    network_rows[2].ifa_name = const_cast<char *>("vxlan0");
+    network_rows[2].ifa_addr = reinterpret_cast<sockaddr *>(&network_links[1]);
+    discovery_calls = 0;
+    discovery_frees = 0;
+    cache_file_failure = false;
+    cache_write_failure = false;
+    cache_writes = 0;
     current_readlink_mode = READLINK_FAIL;
     readlink_text.clear();
     poll_steps.clear();
@@ -401,18 +443,40 @@ void expect_last_verdict(uint32_t verdict, uint32_t data_len)
 
 } // namespace
 
-int resolve_local_dns(uint32_t indev, uint32_t physindev,
-                      struct in6_addr *dns,
-                      char *source_ifname, size_t source_ifname_len)
+static int test_getifaddrs(ifaddrs **addresses)
 {
-    (void)indev;
-    (void)physindev;
-    if (resolver_result < 0)
-        return resolver_result;
-    *dns = resolver_address;
-    if (source_ifname != nullptr && source_ifname_len != 0)
-        std::snprintf(source_ifname, source_ifname_len, "%s", resolver_ifname.c_str());
+    ++discovery_calls;
+    if (resolver_result < 0) {
+        errno = EIO;
+        return -1;
+    }
+    *addresses = network_rows;
     return 0;
+}
+
+static void test_freeifaddrs(ifaddrs *addresses)
+{
+    (void)addresses;
+    ++discovery_frees;
+}
+
+static size_t test_fwrite(const void *data, size_t size, size_t count, FILE *file)
+{
+    ++cache_writes;
+    if (cache_write_failure) {
+        errno = ENOSPC;
+        return 0;
+    }
+    return fwrite(data, size, count, file);
+}
+
+static int test_mkstemp(char *path)
+{
+    if (cache_file_failure) {
+        errno = EACCES;
+        return -1;
+    }
+    return mkstemp(path);
 }
 
 static ssize_t test_readlink(const char *path, char *buf, size_t bufsiz)
@@ -595,13 +659,8 @@ void test_packet_basics()
 {
     const uint8_t bytes[] = { 0xaa, 0x12, 0x34, 0xbb };
     EXPECT(read_be16(bytes + 1) == 0x1234U);
-    EXPECT(is_ula(Tins::IPv6Address("fc00::1")));
-    EXPECT(is_ula(Tins::IPv6Address("fdff::1")));
-    EXPECT(!is_ula(Tins::IPv6Address("fe80::1")));
-    EXPECT(!is_ula(Tins::IPv6Address("2001:db8::1")));
 
     std::string master;
-    EXPECT(!get_bridge_master(std::string(300U, 'x'), master));
     current_readlink_mode = READLINK_FAIL;
     EXPECT(!get_bridge_master("eth0", master));
     current_readlink_mode = READLINK_TEXT;
@@ -614,14 +673,7 @@ void test_packet_basics()
     readlink_text.clear();
     EXPECT(!get_bridge_master("eth0", master));
 
-    char ifname[8] = "keep";
-    in6_addr dns = {};
-    EXPECT(real_resolve_local_dns(0, 0, &dns, ifname, sizeof(ifname)) == -1);
-    EXPECT(std::strcmp(ifname, "keep") == 0);
-    const uint32_t loopback = if_nametoindex("lo");
-    if (loopback != 0U)
-        EXPECT(real_resolve_local_dns(loopback, loopback, &dns,
-                                      ifname, sizeof(ifname)) == -1);
+
 }
 
 void test_ipv6_packet_parsing()
@@ -1031,13 +1083,14 @@ sanitize_result sanitize_ra_fixture(packet_fixture& fixture,
                                    char *error)
 {
     const std::vector<in6_addr> dns_servers(1U, local_dns);
+    std::vector<uint8_t> output;
 
     fixture.transport.packet_type = Tins::PDU::ICMPv6;
     return sanitize_ra(&fixture.packet, &fixture.transport, dns_servers,
                        checksum_not_ready, with_log ? "from=a to=b" : nullptr,
                        with_log ? detail : nullptr,
                        with_log ? DETAIL_BUFSIZE : 0U,
-                       error, ERROR_BUFSIZE);
+                       error, ERROR_BUFSIZE, output);
 }
 
 void test_ra_malformed_inputs()
@@ -1203,13 +1256,14 @@ sanitize_result sanitize_dhcp_fixture(packet_fixture& fixture,
                                      char *error)
 {
     const std::vector<in6_addr> dns_servers(1U, local_dns);
+    std::vector<uint8_t> output;
 
     fixture.transport.packet_type = Tins::PDU::DHCPv6;
     return sanitize_dhcpv6(&fixture.packet, &fixture.transport, dns_servers,
                            checksum_not_ready, with_log ? "from=a to=b" : nullptr,
                            with_log ? detail : nullptr,
                            with_log ? DETAIL_BUFSIZE : 0U,
-                           error, ERROR_BUFSIZE);
+                           error, ERROR_BUFSIZE, output);
 }
 
 void test_dhcp_envelope_validation()
@@ -1359,6 +1413,11 @@ void test_dhcp_authentication_and_checksum()
 
 int call_packet_cb(nfgenmsg *message, app_ctx *ctx)
 {
+    // Simulate cache maintenance by the event loop, not by the callback.
+    static unsigned int tick = 0;
+    if (ctx->dns_servers.empty())
+        ctx->dns_cache.refresh(local_dns_cache::clock::time_point{} +
+                               std::chrono::seconds(++tick * 5U));
     return packet_cb(reinterpret_cast<struct nfq_q_handle *>(1), message,
                      reinterpret_cast<struct nfq_data *>(1), ctx);
 }
@@ -1439,7 +1498,8 @@ void test_callback_transport_policy()
     packet_fixture ra = router_advertisement(10U, {});
     prepare_callback_payload(ra.bytes);
     resolver_result = -1;
-    EXPECT(call_packet_cb(&message, &ctx) == 0);
+    app_ctx never_cached = {};
+    EXPECT(call_packet_cb(&message, &never_cached) == 0);
     expect_last_verdict(NF_ACCEPT, 0U);
 }
 
@@ -1506,7 +1566,8 @@ void test_verdict_memory_boundaries()
         packet.data = bytes.data();
         packet.captured_len = bytes.size();
 
-        const int result = verdict_with_modified_ipv6(nullptr, 42U, &packet);
+        std::vector<uint8_t> output;
+        const int result = verdict_with_modified_ipv6(nullptr, 42U, &packet, output);
         if (length > 65531U) {
             EXPECT(result == -1);
             EXPECT(errno == EMSGSIZE);
@@ -1570,6 +1631,171 @@ void test_callback_allocation_failures()
     }
     EXPECT(failures > 2U);
     EXPECT(completed);
+}
+
+
+void test_dns_cache()
+{
+    reset_stubs();
+    current_readlink_mode = READLINK_TEXT;
+    readlink_text = "/sys/class/net/br-lan";
+    std::string path;
+    const auto start = local_dns_cache::clock::time_point{};
+    {
+        local_dns_cache cache;
+        cache.refresh(start);
+        EXPECT(discovery_calls == 1U && discovery_frees == 1U);
+        const auto *bridge = cache.find(11, 0);
+        const auto *port = cache.find(12, 0);
+        EXPECT(bridge != nullptr && port != nullptr);
+        EXPECT(bridge->description == "fd00::53(br-lan)");
+        EXPECT(port->description == bridge->description);
+        EXPECT(cache.find(999, 12) == port);
+        EXPECT(cache.find(0, 0) == nullptr);
+
+        path = cache.path();
+        struct stat metadata = {};
+        EXPECT(stat(path.c_str(), &metadata) == 0);
+        EXPECT((metadata.st_mode & 0777) == 0600);
+        FILE *snapshot = fopen(path.c_str(), "r");
+        EXPECT(snapshot != nullptr);
+        char contents[256] = {};
+        EXPECT(fread(contents, 1, sizeof(contents) - 1U, snapshot) != 0);
+        fclose(snapshot);
+        expect_text_contains(contents, "11 fd00::53(br-lan)");
+        expect_text_contains(contents, "12 fd00::53(br-lan)");
+
+        for (unsigned int i = 0; i < 1000U; ++i)
+            EXPECT(cache.find(12, 0) == port);
+        cache.refresh(start + std::chrono::seconds(4));
+        EXPECT(discovery_calls == 1U);
+
+        // Missing addresses keep the previous DNS and persisted snapshot while retrying.
+        network_address.sin6_addr = address("fe80::1");
+        cache.refresh(start + std::chrono::seconds(5));
+        EXPECT(cache.find(11, 12)->description == "fd00::53(br-lan)");
+        EXPECT(stat(path.c_str(), &metadata) == 0 && metadata.st_size > 0);
+        EXPECT(cache_writes == 1U);
+        network_address.sin6_addr = address("fc00::99");
+        cache.refresh(start + std::chrono::seconds(10));
+        EXPECT(cache.find(11, 0)->description == "fc00::99(br-lan)");
+
+        resolver_result = -1;
+        cache.refresh(start + std::chrono::seconds(15));
+        EXPECT(cache.find(11, 12)->description == "fc00::99(br-lan)");
+        EXPECT(access(path.c_str(), F_OK) == 0);
+        resolver_result = 0;
+        cache.refresh(start + std::chrono::seconds(19));
+        EXPECT(cache.find(11, 12)->description == "fc00::99(br-lan)");
+        cache.refresh(start + std::chrono::seconds(20));
+        EXPECT(cache.find(11, 12) != nullptr);
+        path = cache.path();
+
+        // Interface deletion/recreation must not retain the previous address.
+        network_links[0].sll_ifindex = 21;
+        sockaddr_in6 direct = network_address;
+        direct.sin6_addr = address("fd00::77");
+        network_rows[2].ifa_next = &network_rows[3];
+        network_rows[3].ifa_name = const_cast<char *>("vxlan0");
+        network_rows[3].ifa_addr = reinterpret_cast<sockaddr *>(&direct);
+        cache.refresh(start + std::chrono::seconds(25));
+        EXPECT(cache.find(12, 21)->description == "fd00::77(vxlan0)");
+        EXPECT(cache.find(21, 12)->description == "fc00::99(br-lan)");
+        EXPECT(cache.find(11, 0) == nullptr);
+        EXPECT(cache.find(21, 0) != nullptr);
+
+        network_rows[0].ifa_name = const_cast<char *>("new-interface");
+        network_rows[1].ifa_name = const_cast<char *>("new-interface");
+        network_address.sin6_addr = address("fe80::1");
+        cache.refresh(start + std::chrono::seconds(30));
+        EXPECT(cache.find(21, 0) == nullptr);
+    }
+    EXPECT(access(path.c_str(), F_OK) == -1);
+
+    reset_stubs();
+    local_dns_cache cache;
+    cache_file_failure = true;
+    cache.refresh(start);
+    EXPECT(cache.find(11, 0) != nullptr);
+    EXPECT(cache.path()[0] == '\0');
+    cache_file_failure = false;
+    cache.refresh(start + std::chrono::seconds(5));
+    EXPECT(cache.path()[0] != '\0');
+
+    // Discovery allocation failure frees getifaddrs but preserves the last DNS.
+    allocations_before_failure = 0;
+    cache.refresh(start + std::chrono::seconds(10));
+    allocations_before_failure = -1;
+    EXPECT(cache.find(11, 0)->description == "fd00::53(br-lan)");
+    EXPECT(discovery_calls == discovery_frees);
+    cache.refresh(start + std::chrono::seconds(15));
+    EXPECT(cache.find(11, 0) != nullptr);
+    const unsigned int writes = cache_writes;
+    cache.refresh(start + std::chrono::seconds(20));
+    EXPECT(cache_writes == writes);
+
+    cache_write_failure = true;
+    network_address.sin6_addr = address("fd00::88");
+    cache.refresh(start + std::chrono::seconds(25));
+    EXPECT(cache.find(11, 0)->description == "fd00::88(br-lan)");
+    EXPECT(cache.path()[0] == '\0');
+    cache_write_failure = false;
+    cache.refresh(start + std::chrono::seconds(30));
+    EXPECT(cache.path()[0] != '\0');
+}
+
+void test_callback_cache_and_buffer_reuse()
+{
+    reset_stubs();
+    app_ctx ctx = {};
+    ctx.dns_cache.refresh();
+    nfgenmsg message = bridge_message();
+    auto input = router_advertisement(10, { rdnss_option({ address("fd00::1") }) });
+    const auto original = input.bytes;
+    prepare_callback_payload(input.bytes);
+    const auto call = [&]() {
+        return packet_cb(reinterpret_cast<nfq_q_handle *>(1), &message,
+                         reinterpret_cast<nfq_data *>(1), &ctx);
+    };
+    EXPECT(call() == 0);
+    const auto *buffer = ctx.packet_buffer.data();
+    const auto *options = ctx.option_buffer.data();
+    for (unsigned int i = 0; i < 100U; ++i) {
+        std::copy(original.begin(), original.end(), input.bytes.begin());
+        nfq_stub.verdicts.clear();
+        EXPECT(call() == 0);
+        EXPECT(nfq_stub.verdicts.back().data_len != 0U);
+        EXPECT(ctx.packet_buffer.data() == buffer);
+        EXPECT(ctx.option_buffer.data() == options);
+    }
+    EXPECT(discovery_calls == 1U && discovery_frees == 1U);
+
+    resolver_result = -1;
+    ctx.dns_cache.refresh(local_dns_cache::clock::now() + std::chrono::seconds(5));
+    std::copy(original.begin(), original.end(), input.bytes.begin());
+    nfq_stub.verdicts.clear();
+    EXPECT(call() == 0);
+    EXPECT(nfq_stub.verdicts.back().data_len != 0U);
+    const auto expected = router_advertisement(0,
+        { rdnss_option({ address("fd00::53") }) });
+    EXPECT(nfq_stub.verdicts.back().data == expected.bytes);
+
+    // Validation failures leave the source untouched, even after a DNS option.
+    char detail[DETAIL_BUFSIZE] = {};
+    char error[ERROR_BUFSIZE] = {};
+    auto malformed = router_advertisement(10,
+        { rdnss_option({ address("fd00::1") }), { 1 } });
+    const auto original_malformed = malformed.bytes;
+    EXPECT(sanitize_ra_fixture(malformed, address("fd00::53"), false, false,
+                               detail, error) == SANITIZE_ERROR);
+    EXPECT(malformed.bytes == original_malformed);
+    auto malformed_dhcp = dhcpv6_packet(Tins::DHCPv6::REPLY,
+        { dhcp_option(Tins::DHCPv6::DNS_SERVERS,
+                      wire_addresses({ address("fd00::1") })), { 1 } });
+    const auto original_dhcp = malformed_dhcp.bytes;
+    EXPECT(sanitize_dhcp_fixture(malformed_dhcp, address("fd00::53"), false, false,
+                                 detail, error) == SANITIZE_ERROR);
+    EXPECT(malformed_dhcp.bytes == original_dhcp);
 }
 
 void test_callback_configured_dns_servers()
@@ -1875,10 +2101,59 @@ void test_daemon_poll_and_receive_paths()
 
 } // namespace
 
-int main()
+
+int benchmark_packets()
 {
+    for (unsigned int scenario = 0; scenario < 3U; ++scenario) {
+        reset_stubs();
+        app_ctx ctx = {};
+        if (scenario != 0)
+            ctx.dns_servers = { address("fd00::53"), address("fd00::54") };
+        if (ctx.dns_servers.empty())
+            ctx.dns_cache.refresh();
+        nfgenmsg message = bridge_message();
+        auto input = scenario == 2U ?
+            dhcpv6_packet(Tins::DHCPv6::REPLY,
+                { dhcp_option(Tins::DHCPv6::DNS_SERVERS,
+                              wire_addresses({ address("fd00::1") })),
+                  dhcp_option(100U, std::vector<uint8_t>(2040U, 0x11)) }) :
+            router_advertisement(0,
+                { rdnss_option({ address(scenario == 0U ? "fd00::53" : "fd00::1") }),
+                  ra_option(1U, 255U, 0x11) });
+        const auto original = input.bytes;
+        prepare_callback_payload(input.bytes);
+        const auto process = [&]() {
+            std::copy(original.begin(), original.end(), input.bytes.begin());
+            nfq_stub.verdicts.clear();
+            packet_cb(reinterpret_cast<nfq_q_handle *>(1), &message,
+                      reinterpret_cast<nfq_data *>(1), &ctx);
+        };
+        for (unsigned int i = 0; i < 100U; ++i)
+            process();
+        const size_t allocations = allocation_count;
+        const auto start = std::chrono::steady_clock::now();
+        const unsigned int iterations = 20000U;
+        for (unsigned int i = 0; i < iterations; ++i)
+            process();
+        const double elapsed = std::chrono::duration<double, std::micro>(
+            std::chrono::steady_clock::now() - start).count();
+        std::printf("BENCH %s: %.3f us/packet, %.2f allocations/packet\n",
+                    scenario == 0U ? "automatic unchanged RA" :
+                    scenario == 1U ? "configured rewrite RA" : "configured rewrite DHCPv6",
+                    elapsed / iterations,
+                    static_cast<double>(allocation_count - allocations) / iterations);
+    }
+    return state.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && std::strcmp(argv[1], "--benchmark") == 0)
+        return benchmark_packets();
     reset_stubs();
     run_test("packet basics", test_packet_basics);
+    run_test("DNS cache lifecycle and retries", test_dns_cache);
+    run_test("callback cache and buffer reuse", test_callback_cache_and_buffer_reuse);
     run_test("IPv6 packet parsing", test_ipv6_packet_parsing);
     run_test("IPv6 packet replacement", test_ipv6_packet_replacement);
     run_test("logging formatters", test_logging_formatters);

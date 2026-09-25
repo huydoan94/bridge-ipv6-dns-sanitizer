@@ -1,129 +1,171 @@
 #include "network.h"
+#include "logging.h"
 
-#include <array>
-#include <cstdio>
-#include <cstring>
-#include <exception>
-#include <string>
-#include <vector>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netpacket/packet.h>
 #include <unistd.h>
 
-#include <tins/ipv6_address.h>
-#include <tins/network_interface.h>
+#include <cerrno>
+#include <cstring>
+#include <memory>
+#include <stdexcept>
+#include <system_error>
 
-constexpr uint8_t IPV6_ULA_PREFIX_MASK = 0xfeU;
-constexpr uint8_t IPV6_ULA_PREFIX_VALUE = 0xfcU;
-constexpr size_t SYSFS_LINK_BUFSIZE = 256U;
-
-static bool is_ula(const Tins::IPv6Address& address)
+static bool get_bridge_master(const std::string& interface_name, std::string& master)
 {
-    return (
-        address.begin()[0] & IPV6_ULA_PREFIX_MASK
-    ) == IPV6_ULA_PREFIX_VALUE;
-}
-
-static bool get_bridge_master(
-    const std::string& interface_name,
-    std::string& master
-)
-{
-    std::array<char, SYSFS_LINK_BUFSIZE> path;
-    std::array<char, SYSFS_LINK_BUFSIZE> target;
-    const char *base;
-    ssize_t target_length;
-
-    if (
-        std::snprintf(
-            path.data(),
-            path.size(),
-            "/sys/class/net/%s/master",
-            interface_name.c_str()
-        ) >= static_cast<int>(path.size())
-    ) {
+    const std::string path = "/sys/class/net/" + interface_name + "/master";
+    char target[256];
+    const ssize_t length = readlink(path.c_str(), target, sizeof(target) - 1U);
+    if (length <= 0 || static_cast<size_t>(length) == sizeof(target) - 1U)
         return false;
-    }
-
-    target_length = readlink(path.data(), target.data(), target.size() - 1U);
-    if (target_length < 0) {
-        return false;
-    }
-
-    target[static_cast<size_t>(target_length)] = '\0';
-    base = std::strrchr(target.data(), '/');
-    master = base != nullptr ? base + 1 : target.data();
-
+    target[length] = '\0';
+    const char *base = std::strrchr(target, '/');
+    master = base == nullptr ? target : base + 1;
     return !master.empty();
 }
 
-static bool find_ula_on_interface(
-    const std::string& interface_name,
-    struct in6_addr *result
+struct interface_dns {
+    uint32_t index = 0;
+    std::vector<in6_addr> servers;
+};
+
+// One OS snapshot replaces the old repeated interface/address enumeration.
+static std::map<uint32_t, local_dns_source> discover_local_dns(
+    const std::map<uint32_t, local_dns_source>& previous
 )
 {
-    const std::vector<Tins::NetworkInterface::IPv6Prefix> addresses =
-        Tins::NetworkInterface(interface_name).ipv6_addresses();
-
-    for (const Tins::NetworkInterface::IPv6Prefix& prefix : addresses) {
-        if (!is_ula(prefix.address)) {
+    ifaddrs *raw = nullptr;
+    if (getifaddrs(&raw) < 0)
+        throw std::system_error(errno, std::generic_category(), "getifaddrs");
+    const std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> addresses(raw, freeifaddrs);
+    std::map<std::string, interface_dns> interfaces;
+    for (const ifaddrs *item = addresses.get(); item != nullptr; item = item->ifa_next) {
+        if (item->ifa_addr == nullptr)
             continue;
+        auto& interface = interfaces[item->ifa_name];
+        if (item->ifa_addr->sa_family == AF_PACKET) {
+            const auto *link = reinterpret_cast<const sockaddr_ll *>(item->ifa_addr);
+            interface.index = static_cast<uint32_t>(link->sll_ifindex);
+        } else if (item->ifa_addr->sa_family == AF_INET6 && interface.servers.empty()) {
+            const auto *ipv6 = reinterpret_cast<const sockaddr_in6 *>(item->ifa_addr);
+            if ((ipv6->sin6_addr.s6_addr[0] & 0xfeU) == 0xfcU)
+                interface.servers.push_back(ipv6->sin6_addr);
         }
-
-        prefix.address.copy(result->s6_addr);
-        return true;
     }
 
-    return false;
+    std::map<uint32_t, local_dns_source> result;
+    for (const auto& item : interfaces) {
+        if (item.second.index == 0)
+            continue;
+        const auto *source = &item;
+        if (source->second.servers.empty()) {
+            std::string master;
+            const auto bridge = get_bridge_master(item.first, master) ?
+                interfaces.find(master) : interfaces.end();
+            if (bridge == interfaces.end() || bridge->second.servers.empty()) {
+                const auto cached = previous.find(item.second.index);
+                // An interface index may be reused by a different interface.
+                if (cached != previous.end() && cached->second.interface_name == item.first)
+                    result.emplace(item.second.index, cached->second);
+                continue;
+            }
+            source = &*bridge;
+        }
+        char description[LOCAL_DNS_TEXT_BUFSIZE];
+        format_local_dns_log(&source->second.servers.front(), source->first.c_str(),
+                             description, sizeof(description));
+        result.emplace(item.second.index, local_dns_source{
+            source->second.servers, description, item.first
+        });
+    }
+    return result;
 }
 
-int resolve_local_dns(
-    uint32_t indev,
-    uint32_t physindev,
-    struct in6_addr *dns,
-    char *source_ifname,
-    size_t source_ifname_len
-)
+local_dns_cache::~local_dns_cache()
 {
-    const std::array<uint32_t, 2> candidates = {{indev, physindev}};
+    close_file();
+}
 
-    for (size_t index = 0; index < candidates.size(); ++index) {
-        const uint32_t interface_index = candidates[index];
+void local_dns_cache::close_file()
+{
+    if (file_ != nullptr) {
+        fclose(file_);
+        file_ = nullptr;
+        unlink(path_);
+        path_[0] = '\0';
+    }
+}
 
-        if (interface_index == 0) {
-            continue;
+void local_dns_cache::save(const std::string& snapshot)
+{
+    if (file_ != nullptr && snapshot == saved_snapshot_)
+        return;
+
+    if (file_ == nullptr) {
+        std::strcpy(path_, DNS_CACHE_TEMPLATE);
+        const int fd = mkstemp(path_);
+        if (fd < 0) {
+            path_[0] = '\0';
+            throw std::system_error(errno, std::generic_category(), "create DNS cache");
         }
-        if (index > 0 && interface_index == candidates[0]) {
-            continue;
+        file_ = fdopen(fd, "w+");
+        if (file_ == nullptr) {
+            const int error = errno;
+            close(fd);
+            unlink(path_);
+            path_[0] = '\0';
+            throw std::system_error(error, std::generic_category(), "open DNS cache");
         }
-
-        try {
-            const std::string interface_name =
-                Tins::NetworkInterface::from_index(interface_index).name();
-            std::string resolved_interface_name = interface_name;
-            std::string master;
-
-            if (!find_ula_on_interface(interface_name, dns)) {
-                if (
-                    !get_bridge_master(interface_name, master) ||
-                    !find_ula_on_interface(master, dns)
-                ) {
-                    continue;
-                }
-                resolved_interface_name = master;
-            }
-
-            if (source_ifname != nullptr && source_ifname_len != 0) {
-                std::snprintf(
-                    source_ifname,
-                    source_ifname_len,
-                    "%s",
-                    resolved_interface_name.c_str()
-                );
-            }
-            return 0;
-        } catch (const std::exception&) {
-            continue;
-        }
+        log_info("automatic DNS cache: %s", path_);
     }
 
-    return -1;
+    rewind(file_);
+    if (fwrite(snapshot.data(), 1, snapshot.size(), file_) != snapshot.size() ||
+        fflush(file_) != 0 || ftruncate(fileno(file_), static_cast<off_t>(snapshot.size())) < 0) {
+        const int error = errno;
+        close_file();
+        throw std::system_error(error, std::generic_category(), "write DNS cache");
+    }
+    saved_snapshot_ = snapshot;
+}
+
+void local_dns_cache::refresh(clock::time_point now)
+{
+    if (now < next_refresh_)
+        return;
+    next_refresh_ = now + std::chrono::seconds(DNS_REFRESH_SECONDS);
+
+    try {
+        auto entries = discover_local_dns(entries_);
+        entries_.swap(entries);
+    } catch (const std::exception& error) {
+        log_error("automatic DNS discovery failed: %s; retaining cached DNS and retrying in %u seconds",
+                  error.what(), DNS_REFRESH_SECONDS);
+    }
+
+    if (entries_.empty() && !missing_reported_)
+        log_error("no local ULA available; packets pass unchanged until the next DNS refresh");
+    else if (!entries_.empty() && missing_reported_)
+        log_info("automatic DNS discovery recovered");
+    missing_reported_ = entries_.empty();
+
+    try {
+        std::string snapshot;
+        for (const auto& item : entries_)
+            snapshot += std::to_string(item.first) + " " + item.second.description + "\n";
+        save(snapshot);
+    } catch (const std::exception& error) {
+        // Persistence is diagnostic; packet processing can use the memory cache.
+        log_error("automatic DNS cache persistence failed: %s; retrying in %u seconds",
+                  error.what(), DNS_REFRESH_SECONDS);
+    }
+}
+
+const local_dns_source *local_dns_cache::find(uint32_t indev, uint32_t physindev) const
+{
+    auto entry = entries_.find(indev);
+    if (entry == entries_.end())
+        entry = entries_.find(physindev);
+    return entry == entries_.end() ? nullptr : &entry->second;
 }
