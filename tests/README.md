@@ -7,8 +7,8 @@ system calls are replaced with deterministic test doubles.
 
 The suite covers:
 
-- IPv6 NFQUEUE payload validation and in-place removal
-- option compaction and checksum-state preservation
+- IPv6 NFQUEUE payload validation and bounded range replacement
+- option rebuilding and checksum-state preservation
 - IPv6 extension-header and transport policy
 - RA validation, RDNSS rewriting/deduplication, DNSSL/PvD removal, SEND policy,
   checksums, logging, and compaction failures
@@ -16,9 +16,10 @@ The suite covers:
   List removal, Authentication policy, checksums, logging, and compaction
   failures
 - NFQUEUE callback accept/drop/change/fail-open decisions
+- configured multi-server DNS rewriting with packet expansion
 - daemon argument, setup, poll, receive, and cleanup paths
 - formatting helpers, address lists, DUIDs, and transaction IDs
-- required UCI queue-number validation and procd argument construction
+- required UCI queue-number and optional DNS-list validation and procd arguments
 - advisory nftables checks for exact queue numbers, ranges, and inspection errors
 
 Run with installed development headers and libraries:

@@ -61,102 +61,53 @@ enum ipv6_packet_result parse_nfqueue_ipv6_payload(
     view->captured_len = payload_len;
     view->declared_end = payload + ipv6_packet_len;
     view->captured_end = payload + payload_len;
+    view->capacity_end = view->captured_end;
     return IPV6_PACKET_OK;
 }
 
-int ipv6_packet_remove(
+
+int ipv6_packet_replace(
     struct ipv6_packet_view *packet,
-    uint8_t *remove_start,
-    size_t remove_len
+    uint8_t *start,
+    size_t old_len,
+    const std::vector<uint8_t>& replacement
 )
 {
-    uint8_t *remove_end;
-    uint16_t payload_len;
-
     if (
-        packet == nullptr ||
-        remove_start == nullptr ||
-        remove_len == 0
-    ) {
-        return remove_len == 0 ? 0 : -1;
-    }
-    if (
-        remove_start < packet->data + sizeof(struct ip6_hdr) ||
-        remove_start > packet->declared_end
+        start < packet->data + sizeof(struct ip6_hdr) ||
+        start > packet->declared_end ||
+        old_len > static_cast<size_t>(packet->declared_end - start)
     ) {
         return -1;
     }
-    if (remove_len > static_cast<size_t>(packet->declared_end - remove_start)) {
+
+    const size_t payload_len = Tins::Endian::be_to_host(packet->header->ip6_plen);
+    if (old_len > payload_len || replacement.size() > UINT16_MAX - (payload_len - old_len)) {
+        return -1;
+    }
+    const size_t captured_len = packet->captured_len - old_len + replacement.size();
+    if (captured_len > static_cast<size_t>(packet->capacity_end - packet->data)) {
         return -1;
     }
 
-    payload_len = Tins::Endian::be_to_host(packet->header->ip6_plen);
-    if (static_cast<size_t>(payload_len) < remove_len) {
-        return -1;
-    }
-
-    remove_end = remove_start + remove_len;
+    // Preserve bytes beyond both the transport and IPv6 declared boundaries.
     std::memmove(
-        remove_start,
-        remove_end,
-        static_cast<size_t>(packet->captured_end - remove_end)
+        start + replacement.size(),
+        start + old_len,
+        static_cast<size_t>(packet->captured_end - (start + old_len))
     );
+    if (!replacement.empty()) {
+        std::memcpy(start, replacement.data(), replacement.size());
+    }
 
-    packet->captured_len -= remove_len;
-    packet->declared_len -= remove_len;
-    packet->declared_end -= remove_len;
-    packet->captured_end -= remove_len;
+    packet->captured_len = captured_len;
+    packet->declared_len = packet->declared_len - old_len + replacement.size();
+    packet->captured_end = packet->data + packet->captured_len;
+    packet->declared_end = packet->data + packet->declared_len;
     packet->header->ip6_plen = Tins::Endian::host_to_be(
-        static_cast<uint16_t>(static_cast<size_t>(payload_len) - remove_len)
+        static_cast<uint16_t>(payload_len - old_len + replacement.size())
     );
     return 0;
-}
-
-void option_compactor_init(struct option_compactor *compactor, uint8_t *start)
-{
-    compactor->start = start;
-    compactor->read = start;
-    compactor->write = start;
-}
-
-void option_compactor_keep(
-    struct option_compactor *compactor,
-    size_t source_len
-)
-{
-    if (compactor->write != compactor->read) {
-        std::memmove(compactor->write, compactor->read, source_len);
-    }
-
-    compactor->read += source_len;
-    compactor->write += source_len;
-}
-
-void option_compactor_skip(
-    struct option_compactor *compactor,
-    size_t source_len
-)
-{
-    compactor->read += source_len;
-}
-
-void option_compactor_keep_prefix(
-    struct option_compactor *compactor,
-    size_t keep_len,
-    size_t source_len
-)
-{
-    if (compactor->write != compactor->read) {
-        std::memmove(compactor->write, compactor->read, keep_len);
-    }
-
-    compactor->read += source_len;
-    compactor->write += keep_len;
-}
-
-size_t option_compactor_output_len(const struct option_compactor *compactor)
-{
-    return static_cast<size_t>(compactor->write - compactor->start);
 }
 
 static uint16_t ipv6_upperlayer_checksum(

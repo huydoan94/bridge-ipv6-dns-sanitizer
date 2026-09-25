@@ -7,6 +7,7 @@ PROJECT_DIR=$(CDPATH= cd -- "$TEST_DIR/.." && pwd)
 
 NFT=nft
 TEST_QUEUE_NUMBER=
+TEST_DNS_SERVERS=
 TEST_VERBOSE=0
 TEST_RULESET=
 TEST_NFT_STATUS=0
@@ -29,6 +30,11 @@ config_get_bool()
 	eval "$1=\$TEST_VERBOSE"
 }
 
+uci_validate_section()
+{
+	dns_server="$TEST_DNS_SERVERS"
+	[ "$dns_server" != invalid ]
+}
 nft()
 {
 	printf '%s\n' "$TEST_RULESET"
@@ -90,6 +96,7 @@ expect_contains()
 reset_test_state()
 {
 	TEST_QUEUE_NUMBER=
+	TEST_DNS_SERVERS=
 	TEST_VERBOSE=0
 	TEST_RULESET=
 	TEST_NFT_STATUS=0
@@ -120,6 +127,7 @@ expect_invalid_queue "999999999999999999999999"
 
 reset_test_state
 TEST_QUEUE_NUMBER=321
+TEST_DNS_SERVERS='fd00::53 2001:db8::53'
 TEST_VERBOSE=1
 TEST_RULESET='table bridge test {
 	chain input {
@@ -127,8 +135,19 @@ TEST_RULESET='table bridge test {
 	}
 }'
 start_service
-[ "$PROCD_COMMAND" = "$PROG -q 321 -v" ] || fail "configured queue was not passed to the daemon"
+[ "$PROCD_COMMAND" = "$PROG -q 321 -d fd00::53 -d 2001:db8::53 -v" ] || \
+	fail "configured queue and DNS servers were not passed to the daemon"
 [ -z "$LOG_MESSAGES" ] || fail "matching nftables rule produced a warning"
+
+reset_test_state
+TEST_QUEUE_NUMBER=321
+TEST_DNS_SERVERS=invalid
+if start_service; then
+	fail "invalid DNS server unexpectedly started the service"
+fi
+[ "$PROCD_OPENED" -eq 0 ] || fail "invalid DNS server opened a procd instance"
+expect_contains "$LOG_MESSAGES" "main.dns_server must contain only IPv6 addresses" \
+	"invalid DNS server did not produce the expected error"
 
 reset_test_state
 TEST_QUEUE_NUMBER=321

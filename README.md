@@ -38,19 +38,19 @@ sanitize sanitize   |
 Router Advertisements:
 
 - Router Lifetime -> `0`
-- RDNSS -> one local ULA
+- RDNSS -> configured DNS server list, or one automatically discovered local ULA
 - duplicate RDNSS addresses/options -> removed
 - DNSSL option 31 -> removed
 - PvD option 21 -> removed
 
 DHCPv6 Advertise/Reply packets (`547 -> 546`):
 
-- DNS Recursive Name Server option 23 -> one local ULA
+- DNS Recursive Name Server option 23 -> the same selected DNS server list
 - duplicate DNS addresses/options -> removed
 - Domain Search List option 24 -> removed
 
-The local DNS address is the first ULA (`fc00::/7`) found on the ingress
-interface or its bridge master.
+When no DNS list is configured, the automatic DNS address is the first ULA
+(`fc00::/7`) found on the ingress interface or its bridge master.
 
 ## Packet handling
 
@@ -169,11 +169,33 @@ Default:
 config sanitizer 'main'
     option queue_number '100'
     option verbose '0'
+    # list dns_server 'fd00::53'
+    # list dns_server '2001:db8::53'
 ```
 
 `queue_number` is required and must be an integer from `0` through `65535`. The
 service logs an error and does not start when the option is missing or invalid.
 The nftables rules must use the same number.
+
+`dns_server` is optional and repeatable. If one or more entries are present,
+each must be an IPv6 address and the configured list replaces advertised RDNSS
+and DHCPv6 DNS addresses. If it is absent, automatic local-ULA discovery remains
+active. Up to 10 DNS servers may be configured.
+
+Configure a DNS list and restart the service:
+
+```sh
+uci add_list bridge-ipv6-dns-sanitizer.main.dns_server='fd00::53'
+uci add_list bridge-ipv6-dns-sanitizer.main.dns_server='2001:db8::53'
+uci commit bridge-ipv6-dns-sanitizer
+/etc/init.d/bridge-ipv6-dns-sanitizer restart
+```
+
+Delete the list to return to automatic local-ULA discovery:
+
+```sh
+uci -q delete bridge-ipv6-dns-sanitizer.main.dns_server
+```
 
 Enable verbose packet logging:
 

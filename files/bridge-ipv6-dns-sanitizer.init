@@ -99,7 +99,7 @@ check_nft_queue()
 
 start_service()
 {
-	local queue_number verbose
+	local dns_server dns_servers queue_number verbose
 
 	config_load "$CONF"
 	config_get queue_number main queue_number
@@ -110,10 +110,21 @@ start_service()
 		return 1
 	fi
 
+	if ! uci_validate_section "$CONF" sanitizer main \
+		'dns_server:list(ip6addr)'; then
+		service_log err "option main.dns_server must contain only IPv6 addresses"
+		return 1
+	fi
+
+	dns_servers="$dns_server"
+
 	check_nft_queue "$queue_number"
 
 	procd_open_instance
 	procd_set_param command "$PROG" -q "$queue_number"
+	for dns_server in $dns_servers; do
+		procd_append_param command -d "$dns_server"
+	done
 	[ "$verbose" -eq 1 ] && procd_append_param command -v
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1

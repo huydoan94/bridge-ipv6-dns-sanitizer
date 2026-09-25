@@ -179,6 +179,7 @@ struct packet_fixture {
         packet.captured_len = bytes.size();
         packet.declared_end = bytes.data() + packet.declared_len;
         packet.captured_end = bytes.data() + packet.captured_len;
+        packet.capacity_end = packet.captured_end;
         transport.packet_type = Tins::PDU::UNKNOWN;
         transport.header = bytes.data() + sizeof(struct ip6_hdr);
         transport.len = declared_payload_len;
@@ -617,52 +618,28 @@ void test_ipv6_packet_parsing()
     EXPECT(view.captured_end == fixture.bytes.data() + fixture.bytes.size());
 }
 
-void test_ipv6_packet_removal()
+void test_ipv6_packet_replacement()
 {
     packet_fixture fixture(IPPROTO_NONE, { 1, 2, 3, 4, 5, 6 }, 2U);
+    const size_t captured_len = fixture.packet.captured_len;
+    fixture.bytes.resize(captured_len + 16U);
+    fixture.refresh(6U);
+    fixture.packet.captured_len = captured_len;
+    fixture.packet.captured_end = fixture.bytes.data() + captured_len;
     uint8_t *payload = fixture.bytes.data() + sizeof(struct ip6_hdr);
-    const size_t original_size = fixture.bytes.size();
 
-    EXPECT(ipv6_packet_remove(nullptr, payload, 1) == -1);
-    EXPECT(ipv6_packet_remove(&fixture.packet, nullptr, 1) == -1);
-    EXPECT(ipv6_packet_remove(nullptr, nullptr, 0) == 0);
-    EXPECT(ipv6_packet_remove(&fixture.packet, fixture.bytes.data(), 1) == -1);
-    EXPECT(ipv6_packet_remove(&fixture.packet, fixture.packet.declared_end + 1, 1) == -1);
-    EXPECT(ipv6_packet_remove(&fixture.packet, payload + 5, 2) == -1);
+    EXPECT(ipv6_packet_replace(&fixture.packet, payload + 5, 2, {}) == -1);
+    EXPECT(ipv6_packet_replace(&fixture.packet, payload, 1, std::vector<uint8_t>(32U)) == -1);
+    EXPECT(ipv6_packet_replace(&fixture.packet, payload + 1, 2, { 7, 8, 9, 10 }) == 0);
+    EXPECT(fixture.packet.captured_len == captured_len + 2U);
+    EXPECT(ntohs(fixture.packet.header->ip6_plen) == 8U);
+    EXPECT(std::vector<uint8_t>(payload, fixture.packet.captured_end) ==
+           std::vector<uint8_t>({ 1, 7, 8, 9, 10, 4, 5, 6, 0xa0, 0xa1 }));
 
-    fixture.packet.header->ip6_plen = htons(1U);
-    EXPECT(ipv6_packet_remove(&fixture.packet, payload + 1, 2) == -1);
-    fixture.packet.header->ip6_plen = htons(6U);
-    EXPECT(ipv6_packet_remove(&fixture.packet, payload + 1, 2) == 0);
-    EXPECT(fixture.packet.captured_len == original_size - 2U);
-    EXPECT(fixture.packet.declared_len == sizeof(struct ip6_hdr) + 4U);
-    EXPECT(ntohs(fixture.packet.header->ip6_plen) == 4U);
-    EXPECT(payload[0] == 1 && payload[1] == 4 && payload[2] == 5 && payload[3] == 6);
-    EXPECT(payload[4] == 0xa0 && payload[5] == 0xa1);
-}
-
-void test_option_compactor()
-{
-    uint8_t bytes[] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-    option_compactor compactor;
-
-    option_compactor_init(&compactor, bytes);
-    EXPECT(option_compactor_output_len(&compactor) == 0U);
-    option_compactor_keep(&compactor, 2U);
-    EXPECT(option_compactor_output_len(&compactor) == 2U);
-    option_compactor_skip(&compactor, 2U);
-    option_compactor_keep(&compactor, 2U);
-    EXPECT(option_compactor_output_len(&compactor) == 4U);
-    EXPECT(bytes[0] == 1 && bytes[1] == 2 && bytes[2] == 5 && bytes[3] == 6);
-
-    uint8_t prefix[] = { 1, 2, 3, 4, 5, 6 };
-    option_compactor_init(&compactor, prefix);
-    option_compactor_keep_prefix(&compactor, 2U, 4U);
-    EXPECT(compactor.read == prefix + 4U);
-    EXPECT(compactor.write == prefix + 2U);
-    option_compactor_keep_prefix(&compactor, 1U, 2U);
-    EXPECT(option_compactor_output_len(&compactor) == 3U);
-    EXPECT(prefix[2] == 5U);
+    EXPECT(ipv6_packet_replace(&fixture.packet, payload + 1, 4, { 2 }) == 0);
+    EXPECT(ntohs(fixture.packet.header->ip6_plen) == 5U);
+    EXPECT(std::vector<uint8_t>(payload, fixture.packet.captured_end) ==
+           std::vector<uint8_t>({ 1, 2, 4, 5, 6, 0xa0, 0xa1 }));
 }
 
 void test_logging_formatters()
@@ -1023,8 +1000,10 @@ sanitize_result sanitize_ra_fixture(packet_fixture& fixture,
                                    char *detail,
                                    char *error)
 {
+    const std::vector<in6_addr> dns_servers(1U, local_dns);
+
     fixture.transport.packet_type = Tins::PDU::ICMPv6;
-    return sanitize_ra(&fixture.packet, &fixture.transport, &local_dns,
+    return sanitize_ra(&fixture.packet, &fixture.transport, dns_servers,
                        checksum_not_ready, with_log ? "from=a to=b" : nullptr,
                        with_log ? detail : nullptr,
                        with_log ? DETAIL_BUFSIZE : 0U,
@@ -1156,7 +1135,7 @@ void test_ra_send_and_compaction_failure()
     error[0] = '\0';
     EXPECT(sanitize_ra_fixture(failure, local_dns, false, false,
                                detail, error) == SANITIZE_ERROR);
-    expect_text_contains(error, "failed to compact RA options");
+    expect_text_contains(error, "failed to replace RA options");
 }
 
 void test_dhcp_option_parser()
@@ -1193,8 +1172,10 @@ sanitize_result sanitize_dhcp_fixture(packet_fixture& fixture,
                                      char *detail,
                                      char *error)
 {
+    const std::vector<in6_addr> dns_servers(1U, local_dns);
+
     fixture.transport.packet_type = Tins::PDU::DHCPv6;
-    return sanitize_dhcpv6(&fixture.packet, &fixture.transport, &local_dns,
+    return sanitize_dhcpv6(&fixture.packet, &fixture.transport, dns_servers,
                            checksum_not_ready, with_log ? "from=a to=b" : nullptr,
                            with_log ? detail : nullptr,
                            with_log ? DETAIL_BUFSIZE : 0U,
@@ -1343,7 +1324,7 @@ void test_dhcp_authentication_and_checksum()
     failure.packet.header->ip6_plen = 0;
     EXPECT(sanitize_dhcp_fixture(failure, local_dns, false, false,
                                  detail, error) == SANITIZE_ERROR);
-    expect_text_contains(error, "failed to compact DHCPv6 options");
+    expect_text_contains(error, "failed to replace DHCPv6 options");
 }
 
 int call_packet_cb(nfgenmsg *message, app_ctx *ctx)
@@ -1485,6 +1466,122 @@ void test_callback_sanitizer_results()
     EXPECT(nfq_stub.verdicts[1].data_len == 0U);
 }
 
+void test_callback_configured_dns_servers()
+{
+    app_ctx ctx = {};
+    const in6_addr primary_dns = address("fd00::53");
+    const in6_addr secondary_dns = address("2001:db8::53");
+    ctx.dns_servers = { primary_dns, secondary_dns };
+    nfgenmsg message = bridge_message();
+
+    // Exercise growth, shrinkage and equal-sized replacement with later options
+    // and captured trailers. Compare the complete verdict, including checksums.
+    for (const auto& incoming : std::vector<std::vector<in6_addr>>{
+             { primary_dns }, { primary_dns, secondary_dns },
+             { primary_dns, secondary_dns, address("fd00::99") } }) {
+        reset_stubs();
+        auto input_ra = router_advertisement(0,
+            { rdnss_option(incoming), ra_option(1U, 1U, 0x11) }, true, 3U);
+        auto expected_ra = router_advertisement(0,
+            { rdnss_option(ctx.dns_servers), ra_option(1U, 1U, 0x11) }, true, 3U);
+        prepare_callback_payload(input_ra.bytes);
+        EXPECT(call_packet_cb(&message, &ctx) == 0);
+        const auto& ra_verdict = nfq_stub.verdicts.back();
+        EXPECT((ra_verdict.data.empty() ? input_ra.bytes : ra_verdict.data) == expected_ra.bytes);
+
+        reset_stubs();
+        auto input_dhcp = dhcpv6_packet(Tins::DHCPv6::REPLY,
+            { dhcp_option(Tins::DHCPv6::DNS_SERVERS, wire_addresses(incoming)),
+              dhcp_option(Tins::DHCPv6::CLIENTID, { 1, 2, 3 }) }, true, 3U);
+        auto expected_dhcp = dhcpv6_packet(Tins::DHCPv6::REPLY,
+            { dhcp_option(Tins::DHCPv6::DNS_SERVERS, wire_addresses(ctx.dns_servers)),
+              dhcp_option(Tins::DHCPv6::CLIENTID, { 1, 2, 3 }) }, true, 3U);
+        prepare_callback_payload(input_dhcp.bytes);
+        EXPECT(call_packet_cb(&message, &ctx) == 0);
+        const auto& dhcp_verdict = nfq_stub.verdicts.back();
+        EXPECT((dhcp_verdict.data.empty() ? input_dhcp.bytes : dhcp_verdict.data) == expected_dhcp.bytes);
+    }
+
+    reset_stubs();
+    packet_fixture ra = router_advertisement(0,
+        { rdnss_option({ address("fd00:1::53") }) });
+    const size_t original_ra_size = ra.bytes.size();
+    prepare_callback_payload(ra.bytes);
+    resolver_result = -1;
+    EXPECT(call_packet_cb(&message, &ctx) == 0);
+    expect_last_verdict(
+        NF_ACCEPT,
+        static_cast<uint32_t>(original_ra_size + sizeof(struct in6_addr))
+    );
+    const std::vector<uint8_t>& modified_ra = nfq_stub.verdicts.back().data;
+    const size_t rdnss_offset =
+        sizeof(struct ip6_hdr) + sizeof(struct nd_router_advert);
+    EXPECT(modified_ra[rdnss_offset + 1U] == 5U);
+    EXPECT(std::memcmp(
+        modified_ra.data() + rdnss_offset + sizeof(struct rdnss_option_wire),
+        &primary_dns,
+        sizeof(primary_dns)
+    ) == 0);
+    EXPECT(std::memcmp(
+        modified_ra.data() + rdnss_offset + sizeof(struct rdnss_option_wire) +
+            sizeof(struct in6_addr),
+        &secondary_dns,
+        sizeof(secondary_dns)
+    ) == 0);
+    const struct ip6_hdr *ra_ip6h =
+        reinterpret_cast<const struct ip6_hdr *>(modified_ra.data());
+    EXPECT(icmpv6_checksum(
+        ra_ip6h,
+        modified_ra.data() + sizeof(struct ip6_hdr),
+        modified_ra.size() - sizeof(struct ip6_hdr)
+    ) == 0U);
+
+    reset_stubs();
+    packet_fixture dhcp = dhcpv6_packet(Tins::DHCPv6::REPLY,
+        { dhcp_option(
+            Tins::DHCPv6::DNS_SERVERS,
+            wire_addresses({ address("fd00:1::53") })
+        ) });
+    const size_t original_dhcp_size = dhcp.bytes.size();
+    prepare_callback_payload(dhcp.bytes);
+    resolver_result = -1;
+    EXPECT(call_packet_cb(&message, &ctx) == 0);
+    expect_last_verdict(
+        NF_ACCEPT,
+        static_cast<uint32_t>(original_dhcp_size + sizeof(struct in6_addr))
+    );
+    const std::vector<uint8_t>& modified_dhcp = nfq_stub.verdicts.back().data;
+    const size_t dns_option_offset =
+        sizeof(struct ip6_hdr) + sizeof(struct udphdr) +
+        sizeof(struct dhcpv6_direct_header_wire);
+    EXPECT(read_be16(modified_dhcp.data() + dns_option_offset) ==
+           Tins::DHCPv6::DNS_SERVERS);
+    EXPECT(read_be16(modified_dhcp.data() + dns_option_offset + sizeof(uint16_t)) ==
+           2U * sizeof(struct in6_addr));
+    EXPECT(std::memcmp(
+        modified_dhcp.data() + dns_option_offset +
+            sizeof(struct dhcpv6_option_header_wire),
+        &primary_dns,
+        sizeof(primary_dns)
+    ) == 0);
+    EXPECT(std::memcmp(
+        modified_dhcp.data() + dns_option_offset +
+            sizeof(struct dhcpv6_option_header_wire) + sizeof(struct in6_addr),
+        &secondary_dns,
+        sizeof(secondary_dns)
+    ) == 0);
+    const struct ip6_hdr *dhcp_ip6h =
+        reinterpret_cast<const struct ip6_hdr *>(modified_dhcp.data());
+    const struct udphdr *udp = reinterpret_cast<const struct udphdr *>(
+        modified_dhcp.data() + sizeof(struct ip6_hdr)
+    );
+    EXPECT(udp_ipv6_checksum(
+        dhcp_ip6h,
+        reinterpret_cast<const uint8_t *>(udp),
+        ntohs(udp->len)
+    ) == 0U);
+}
+
 int run_daemon(std::vector<std::string> arguments)
 {
     std::vector<char *> argv;
@@ -1532,6 +1629,8 @@ std::string capture_daemon_stdout(
 void test_queue_number_parsing()
 {
     uint16_t queue_number = 0;
+    in6_addr dns_server = {};
+    const in6_addr expected_dns = address("fd00::53");
 
     EXPECT(parse_queue_number("0", &queue_number));
     EXPECT(queue_number == 0U);
@@ -1547,6 +1646,11 @@ void test_queue_number_parsing()
     EXPECT(!parse_queue_number("1x", &queue_number));
     EXPECT(!parse_queue_number("65536", &queue_number));
     EXPECT(!parse_queue_number("1", nullptr));
+    EXPECT(parse_dns_server("fd00::53", &dns_server));
+    EXPECT(std::memcmp(&dns_server, &expected_dns, sizeof(dns_server)) == 0);
+    EXPECT(!parse_dns_server("192.0.2.53", &dns_server));
+    EXPECT(!parse_dns_server("invalid", &dns_server));
+    EXPECT(!parse_dns_server(nullptr, &dns_server));
 }
 
 void test_startup_logging()
@@ -1555,13 +1659,15 @@ void test_startup_logging()
     running = 0;
     int status = EXIT_FAILURE;
     const std::string output = capture_daemon_stdout(
-        { "daemon", "-q", "321" },
+        { "daemon", "-q", "321", "-d", "fd00::53", "-d", "2001:db8::53" },
         status);
 
     EXPECT(status == EXIT_SUCCESS);
     expect_text_contains(output.c_str(),
                          "starting version " BRIDGE_IPV6_DNS_SANITIZER_VERSION "\n");
     expect_text_contains(output.c_str(), "listening on NFQUEUE 321\n");
+    expect_text_contains(output.c_str(),
+                         "using 2 configured DNS server(s)\n");
     EXPECT(nfq_stub.queue_number == 321U);
     expect_text_contains(output.c_str(), "stopping\n");
     expect_text_contains(output.c_str(), "exiting\n");
@@ -1584,8 +1690,16 @@ void test_signal_and_cli_paths()
     EXPECT(install_signal_handlers() == 0);
     EXPECT(sigaction_calls == 2);
 
+    std::vector<std::string> too_many_dns_servers = { "daemon", "-q", "100" };
+    for (size_t dns_server_count = 0; dns_server_count < 11U; dns_server_count++) {
+        too_many_dns_servers.push_back("-d");
+        too_many_dns_servers.push_back("fd00::53");
+    }
+
     EXPECT(run_daemon({ "daemon", "-h" }) == EXIT_SUCCESS);
     EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100", "-d", "invalid" }) == EXIT_FAILURE);
+    EXPECT(run_daemon(too_many_dns_servers) == EXIT_FAILURE);
     EXPECT(run_daemon({ "daemon", "-q" }) == EXIT_FAILURE);
     EXPECT(run_daemon({ "daemon", "-q", "invalid" }) == EXIT_FAILURE);
     EXPECT(run_daemon({ "daemon", "-q", "65536" }) == EXIT_FAILURE);
@@ -1660,8 +1774,7 @@ int main()
     reset_stubs();
     run_test("packet basics", test_packet_basics);
     run_test("IPv6 packet parsing", test_ipv6_packet_parsing);
-    run_test("IPv6 packet removal", test_ipv6_packet_removal);
-    run_test("option compactor", test_option_compactor);
+    run_test("IPv6 packet replacement", test_ipv6_packet_replacement);
     run_test("logging formatters", test_logging_formatters);
     run_test("address lists and details", test_address_lists_and_details);
     run_test("DUID formatting", test_duid_formatting);
@@ -1680,6 +1793,8 @@ int main()
     run_test("callback envelope policy", test_callback_envelope_policy);
     run_test("callback transport policy", test_callback_transport_policy);
     run_test("callback sanitizer results", test_callback_sanitizer_results);
+    run_test("callback configured DNS servers",
+             test_callback_configured_dns_servers);
     run_test("queue number parsing", test_queue_number_parsing);
     run_test("startup logging", test_startup_logging);
     run_test("signal and CLI paths", test_signal_and_cli_paths);

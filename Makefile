@@ -21,7 +21,8 @@ define Package/bridge-ipv6-dns-sanitizer/description
 	NFQUEUE sanitizer for bridged VXLAN IPv6 configuration traffic. It
 	preserves Router Advertisement prefix/route information and DHCPv6
 	address assignments, neutralizes remote RA default-router lifetime,
-	normalizes RA RDNSS and DHCPv6 DNS option 23 to one local ingress ULA,
+	normalizes RA RDNSS and DHCPv6 DNS option 23 to the configured DNS list,
+	or to one automatically discovered local ingress ULA when no list is set,
 	and removes advertised DNS search lists.
 endef
 

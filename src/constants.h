@@ -25,6 +25,7 @@ constexpr uint8_t ND_OPTION_PVD = 21U;
 constexpr uint16_t CHECKSUM_INVALID_XOR = 0x0001U;
 constexpr size_t DHCPV6_TRANSACTION_ID_LEN = 3U;
 constexpr size_t NDP_OPTION_LEN_UNIT_OCTETS = 8U;
+constexpr size_t MAX_CONFIGURED_DNS_SERVERS = 10U;
 
 constexpr size_t ADDR_LIST_BUFSIZE = 512U;
 constexpr size_t MAC_TEXT_BUFSIZE = ETH_ALEN * 3U;
