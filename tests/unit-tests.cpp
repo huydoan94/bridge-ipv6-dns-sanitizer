@@ -13,8 +13,33 @@
 #include <functional>
 #include <limits>
 #include <random>
+#include <new>
+#include <cstdlib>
 #include <string>
 #include <vector>
+
+// Fail one allocation, then allow the recovery path and verdict recorder to run.
+static int allocations_before_failure = -1;
+static bool allocation_failed = false;
+
+void *operator new(size_t size)
+{
+    if (allocations_before_failure == 0) {
+        allocations_before_failure = -1;
+        allocation_failed = true;
+        throw std::bad_alloc();
+    }
+    if (allocations_before_failure > 0)
+        --allocations_before_failure;
+    if (void *memory = std::malloc(size == 0 ? 1 : size))
+        return memory;
+    throw std::bad_alloc();
+}
+
+void operator delete(void *memory) noexcept
+{
+    std::free(memory);
+}
 
 #include "../src/network.h"
 #include "../src/packet.h"
@@ -519,6 +544,11 @@ int nfq_set_verdict(struct nfq_q_handle *handle, uint32_t id, uint32_t verdict,
                     uint32_t data_len, const unsigned char *data)
 {
     (void)handle;
+    // The real verdict library does not allocate through C++ operator new.
+    allocations_before_failure = -1;
+    EXPECT(data_len <= 65531U);
+    for (size_t index = data_len; index < NLA_ALIGN(data_len); ++index)
+        EXPECT(data[index] == 0U);
     verdict_call call = { id, verdict, data_len, std::vector<uint8_t>() };
     if (data != nullptr && data_len != 0)
         call.data.assign(data, data + data_len);
@@ -1466,6 +1496,82 @@ void test_callback_sanitizer_results()
     EXPECT(nfq_stub.verdicts[1].data_len == 0U);
 }
 
+
+void test_verdict_memory_boundaries()
+{
+    for (size_t length : { 1U, 2U, 3U, 4U, 65530U, 65531U, 65532U }) {
+        reset_stubs();
+        std::vector<uint8_t> bytes(length, 0xa5);
+        ipv6_packet_view packet = {};
+        packet.data = bytes.data();
+        packet.captured_len = bytes.size();
+
+        const int result = verdict_with_modified_ipv6(nullptr, 42U, &packet);
+        if (length > 65531U) {
+            EXPECT(result == -1);
+            EXPECT(errno == EMSGSIZE);
+            EXPECT(nfq_stub.verdicts.empty());
+        } else {
+            EXPECT(result == 0);
+            EXPECT(nfq_stub.verdicts.back().data == bytes);
+        }
+    }
+
+    // Growth is valid IPv6 but too large for a netlink payload attribute.
+    reset_stubs();
+    app_ctx ctx = {};
+    ctx.dns_servers.assign(10U, address("fd00::53"));
+    nfgenmsg message = bridge_message();
+    std::vector<std::vector<uint8_t>> options = {
+        rdnss_option({ address("fd00::1") })
+    };
+    for (size_t remaining = 65320U; remaining != 0;) {
+        const size_t length = std::min(remaining, size_t(2040U));
+        options.push_back(ra_option(1U, static_cast<uint8_t>(length / 8U)));
+        remaining -= length;
+    }
+    auto packet = router_advertisement(0, options);
+    EXPECT(packet.bytes.size() == 65400U);
+    prepare_callback_payload(packet.bytes);
+    EXPECT(call_packet_cb(&message, &ctx) == 0);
+    EXPECT(nfq_stub.verdicts.size() == 1U);
+    expect_last_verdict(NF_ACCEPT, 0U);
+}
+
+void test_callback_allocation_failures()
+{
+    app_ctx ctx = {};
+    ctx.verbose = true;
+    ctx.dns_servers = { address("fd00::53"), address("fd00::54") };
+    nfgenmsg message = bridge_message();
+    bool completed = false;
+    unsigned int failures = 0;
+
+    for (int budget = 0; budget < 128; ++budget) {
+        reset_stubs();
+        auto packet = router_advertisement(10,
+            { rdnss_option({ address("fd00::1") }) });
+        prepare_callback_payload(packet.bytes);
+        allocation_failed = false;
+        allocations_before_failure = budget;
+        const int result = call_packet_cb(&message, &ctx);
+        allocations_before_failure = -1;
+
+        EXPECT(result == 0);
+        EXPECT(nfq_stub.verdicts.size() == 1U);
+        if (allocation_failed) {
+            ++failures;
+            expect_last_verdict(NF_ACCEPT, 0U);
+        } else {
+            EXPECT(nfq_stub.verdicts.back().data_len != 0U);
+            completed = true;
+            break;
+        }
+    }
+    EXPECT(failures > 2U);
+    EXPECT(completed);
+}
+
 void test_callback_configured_dns_servers()
 {
     app_ctx ctx = {};
@@ -1795,6 +1901,8 @@ int main()
     run_test("callback sanitizer results", test_callback_sanitizer_results);
     run_test("callback configured DNS servers",
              test_callback_configured_dns_servers);
+    run_test("verdict memory boundaries", test_verdict_memory_boundaries);
+    run_test("callback allocation failures", test_callback_allocation_failures);
     run_test("queue number parsing", test_queue_number_parsing);
     run_test("startup logging", test_startup_logging);
     run_test("signal and CLI paths", test_signal_and_cli_paths);

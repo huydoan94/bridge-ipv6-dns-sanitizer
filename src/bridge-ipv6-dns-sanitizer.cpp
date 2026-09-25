@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -546,14 +547,25 @@ static int drop_packet(struct nfq_q_handle *qh, uint32_t id)
 static int verdict_with_modified_ipv6(struct nfq_q_handle *qh, uint32_t id,
                                       const struct ipv6_packet_view *packet)
 {
+    if (packet->captured_len > NFQ_MAX_PAYLOAD) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+
+    // libnfnetlink reads the payload rounded up to netlink alignment.
+    // Own and zero the padding, including when the original packet shrank.
+    std::vector<uint8_t> payload(NLA_ALIGN(packet->captured_len), 0);
+    memcpy(payload.data(), packet->data, packet->captured_len);
     return nfq_set_verdict(qh, id, NF_ACCEPT,
-                           (uint32_t)packet->captured_len, packet->data);
+                           static_cast<uint32_t>(packet->captured_len),
+                           payload.data());
 }
 
 static int packet_cb(struct nfq_q_handle *qh,
                      struct nfgenmsg *nfmsg,
                      struct nfq_data *nfa,
                      void *data)
+try
 {
     struct app_ctx *ctx = static_cast<struct app_ctx *>(data);
     struct nfqnl_msg_packet_hdr *ph;
@@ -692,12 +704,23 @@ static int packet_cb(struct nfq_q_handle *qh,
 
     verdict = verdict_with_modified_ipv6(qh, id, &ipv6);
     if (verdict < 0) {
-        log_error("id=%u: could not send modified IPv6 verdict; "
-                  "ACCEPT unchanged", id);
+        log_error("id=%u: could not send modified IPv6 verdict (%s); "
+                  "ACCEPT unchanged", id, strerror(errno));
         return accept_unchanged(qh, id);
     }
 
     return verdict;
+}
+catch (const std::bad_alloc&) {
+    const struct nfqnl_msg_packet_hdr *ph = nfq_get_msg_packet_hdr(nfa);
+
+    if (ph == nullptr) {
+        log_error("out of memory; NFQUEUE packet header unavailable");
+        return -1;
+    }
+    const uint32_t id = ntohl(ph->packet_id);
+    log_error("id=%u: out of memory while processing packet; ACCEPT unchanged", id);
+    return accept_unchanged(qh, id);
 }
 
 static bool parse_queue_number(const char *text, uint16_t *queue_number)

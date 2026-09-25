@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <linux/if_ether.h>
+#include <linux/netlink.h>
 
 #ifndef BRIDGE_IPV6_DNS_SANITIZER_VERSION
 #define BRIDGE_IPV6_DNS_SANITIZER_VERSION "unknown"
@@ -16,6 +17,7 @@ constexpr char PROGRAM_VERSION[] = BRIDGE_IPV6_DNS_SANITIZER_VERSION;
 
 constexpr uint32_t QUEUE_MAXLEN = 1024U;
 constexpr uint32_t COPY_RANGE = UINT16_MAX;
+constexpr size_t NFQ_MAX_PAYLOAD = UINT16_MAX - NLA_HDRLEN;
 constexpr int POLL_TIMEOUT_MS = 1000;
 constexpr size_t NFQ_NETLINK_HEADROOM = 4096U;
 constexpr size_t NFQ_RECV_BUFSIZE = COPY_RANGE + NFQ_NETLINK_HEADROOM;
