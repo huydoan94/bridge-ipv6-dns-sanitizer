@@ -28,7 +28,7 @@
 # script's own messages and, when a build fails, the errors found in the log
 # and its last 30 lines. VERBOSE=1 also shows the full make output. The built
 # package is copied to bin/ with -<name> before its extension, for example
-# bin/l2dns6rw-1.6.10-r1-x86.apk, and the copy's checksum is verified.
+# bin/l2dns6rw-1.6.11-r1-x86.apk, and the copy's checksum is verified.
 #
 # Exit status: 0 built, 2 SDK missing or not set up, 3 libraries or headers
 # missing, 4 compile error, 1 any other failure.

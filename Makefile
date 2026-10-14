@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=l2dns6rw
-PKG_VERSION:=1.6.10
+PKG_VERSION:=1.6.11
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
