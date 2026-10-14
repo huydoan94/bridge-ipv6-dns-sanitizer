@@ -4,116 +4,126 @@
 #   vm.sh setup                 test bridge br-l2t with veth ports vA-br and
 #                               vB-br; their peers vA (sender) and vB (capture)
 #                               stay outside the bridge with IPv6 disabled;
-#                               br-l2t holds fd00:abcd::1/64; a bridge nft
-#                               table queues RA and DHCPv6 replies from vA-br
-#   vm.sh case NAME [ARG...]    captures on vB while sending ra.bin, dhcp.bin
-#                               and send.bin from vA; ARG... starts the daemon
-#                               with those arguments, "auto" with none (the
-#                               automatic DNS mode), "auto-no-ula" likewise
-#                               with br-l2t's ULA removed, "none" runs none
-#   vm.sh idle SECONDS ARG...   counts the daemon's context switches while idle
-#   vm.sh teardown              removes everything setup created
+#                               br-l2t holds fd00:abcd::1/64
+#   vm.sh start [ARG...]        starts the daemon on vA-br with ARG... (-d, -v)
+#                               and waits until it has attached
+#   vm.sh stop                  stops the daemon (the pinned program stays)
+#   vm.sh detach                detaches the program (l2dns6rw -D)
+#   vm.sh send NAME             captures on vB while sending ra.bin, dhcp.bin
+#                               and send.bin from vA, into NAME.pcap
+#   vm.sh recreate              deletes and recreates the vA-br port, then
+#                               waits until the daemon has re-attached
+#   vm.sh ula del|add           removes or restores br-l2t's ULA
+#   vm.sh idle SECONDS          counts the daemon's context switches while idle,
+#                               after 5 s for earlier changes to settle
+#   vm.sh teardown              stops and detaches, removes everything setup made
 #
-# Files live in /tmp/l2t; br-lan, fw4 and other tables are never touched.
+# Files live in /tmp/l2t; br-lan, fw4 and other devices are never touched.
 set -eu
 
 dir=/tmp/l2t
+log=$dir/daemon.log
+pidfile=$dir/daemon.pid
 mkdir -p "$dir"
-setup() {
-	ip link add br-l2t type bridge
-	for side in A B; do
-		ip link add "v$side-br" type veth peer name "v$side"
-		ip link set "v$side-br" master br-l2t
-		for device in "v$side" "v$side-br"; do
-			echo 1 >"/proc/sys/net/ipv6/conf/$device/disable_ipv6"
-			ip link set "$device" up
-		done
+
+add_port() { # SIDE
+	ip link add "v$1-br" type veth peer name "v$1"
+	ip link set "v$1-br" master br-l2t
+	for device in "v$1" "v$1-br"; do
+		echo 1 >"/proc/sys/net/ipv6/conf/$device/disable_ipv6"
+		ip link set "$device" up
 	done
+}
+
+# Waits up to 60 s for PATTERN to appear in the daemon log after line FROM.
+wait_log() { # FROM PATTERN
+	started=$(date +%s)
+	until tail -n "+$(($1 + 1))" "$log" | grep -q "$2"; do
+		if [ $(($(date +%s) - started)) -ge 60 ] || ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+			tail -n 20 "$log"
+			echo "timed out waiting for: $2" >&2
+			exit 1
+		fi
+		sleep 1
+	done
+}
+
+case ${1:-} in
+setup)
+	ip link add br-l2t type bridge
+	add_port A
+	add_port B
 	ip link set vB address 02:00:00:00:00:0b
 	ip link set br-l2t up
 	ip -6 addr add fd00:abcd::1/64 dev br-l2t nodad
-	nft -f - <<'RULES'
-table bridge l2t {
-	chain prerouting {
-		type filter hook prerouting priority filter; policy accept;
-		iifname "vA-br" icmpv6 type nd-router-advert counter queue num 100
-		iifname "vA-br" udp sport 547 udp dport 546 counter queue num 100
-	}
-}
-RULES
 	echo "setup done"
-}
-
-start_daemon() { # NAME ARG...
-	name=$1
+	;;
+start)
 	shift
-	/usr/sbin/l2dns6rw -q 100 "$@" -v >"$dir/$name.log" 2>&1 &
-	daemon=$!
-	sleep 1
-	kill -0 "$daemon" || { cat "$dir/$name.log"; echo "daemon exited" >&2; exit 1; }
-}
-
-run_case() { # NAME ARG...
-	name=$1
-	shift
-	daemon=
-	tcpdump -q -U -i vB -w "$dir/$name.pcap" ip6 2>"$dir/$name.tcpdump" &
+	from=$(wc -l <"$log" 2>/dev/null || echo 0)
+	/usr/sbin/l2dns6rw -i vA-br "$@" >>"$log" 2>&1 &
+	echo $! >"$pidfile"
+	wait_log "$from" 'vA-br: sanitizing'
+	tail -n "+$((from + 1))" "$log"
+	;;
+stop)
+	if [ -s "$pidfile" ]; then
+		kill "$(cat "$pidfile")" 2>/dev/null || true
+		while kill -0 "$(cat "$pidfile")" 2>/dev/null; do sleep 1; done
+		rm -f "$pidfile"
+	fi
+	;;
+detach)
+	/usr/sbin/l2dns6rw -D
+	;;
+send)
+	tcpdump -q -U -i vB -w "$dir/$2.pcap" ip6 2>/dev/null &
 	capture=$!
 	sleep 1
-	case $1 in
-	none) : >"$dir/$name.log" ;;
-	auto) start_daemon "$name" ;;
-	auto-no-ula)
-		ip -6 addr del fd00:abcd::1/64 dev br-l2t
-		start_daemon "$name"
-		;;
-	*) start_daemon "$name" "$@" ;;
-	esac
 	for frames in ra dhcp send; do
-		"$dir/send-frames" vA "$dir/$frames.bin"
+		"$dir/send-frames" vA "$dir/$frames.bin" >/dev/null
 	done
 	sleep 1
 	kill "$capture"
 	wait "$capture" 2>/dev/null || true
-	if [ -n "$daemon" ]; then
-		kill "$daemon"
-		wait "$daemon" 2>/dev/null || true
+	;;
+recreate)
+	from=$(wc -l <"$log")
+	ip link del vA-br
+	add_port A
+	wait_log "$from" 'vA-br: sanitizing'
+	tail -n "+$((from + 1))" "$log"
+	;;
+ula)
+	if [ "$2" = add ]; then
+		ip -6 addr add fd00:abcd::1/64 dev br-l2t nodad
+	else
+		ip -6 addr del fd00:abcd::1/64 dev br-l2t
 	fi
-	[ "$1" != auto-no-ula ] || ip -6 addr add fd00:abcd::1/64 dev br-l2t nodad
-	nft list chain bridge l2t prerouting | sed -n 's/.*counter \(packets [0-9]* bytes [0-9]*\).*/\1/p' |
-		tr '\n' ';' | sed 's/^/nft counters: /; s/$/\n/'
-	echo "--- daemon log ($name)"
-	cat "$dir/$name.log"
-}
-
-idle() { # SECONDS ARG...
-	seconds=$1
-	shift
-	start_daemon idle "$@"
-	sleep 2
-	before=$(sed -n 's/^voluntary_ctxt_switches:\t*//p' "/proc/$daemon/status")
-	sleep "$seconds"
-	after=$(sed -n 's/^voluntary_ctxt_switches:\t*//p' "/proc/$daemon/status")
-	kill "$daemon"
-	wait "$daemon" 2>/dev/null || true
-	echo "idle $seconds s: voluntary context switches $before -> $after (+$((after - before)))"
-}
-
-teardown() {
-	nft delete table bridge l2t 2>/dev/null || true
+	# Lets the daemon handle the address event.
+	sleep 1
+	;;
+idle)
+	pid=$(cat "$pidfile")
+	# Lets notifications from the previous steps (address changes) arrive first.
+	sleep 5
+	before=$(sed -n 's/^voluntary_ctxt_switches:\t*//p' "/proc/$pid/status")
+	sleep "$2"
+	after=$(sed -n 's/^voluntary_ctxt_switches:\t*//p' "/proc/$pid/status")
+	echo "idle $2 s: voluntary context switches $before -> $after (+$((after - before)))"
+	;;
+teardown)
+	sh "$0" stop
+	/usr/sbin/l2dns6rw -D 2>/dev/null || true
 	ip link del br-l2t 2>/dev/null || true
 	for side in A B; do
 		ip link del "v$side-br" 2>/dev/null || true
 	done
+	rm -f "$log"
 	echo "teardown done"
-}
-
-command=${1:-}
-[ "$#" -eq 0 ] || shift
-case $command in
-setup) setup ;;
-case) run_case "$@" ;;
-idle) idle "$@" ;;
-teardown) teardown ;;
-*) sed -n '2,17p' "$0" >&2; exit 2 ;;
+	;;
+*)
+	sed -n '2,20p' "$0" >&2
+	exit 2
+	;;
 esac

@@ -1,98 +1,55 @@
-# Unit tests
+# Tests
 
-The test executable includes the production translation units directly so it
-can exercise file-local sanitizer and NFQUEUE callback branches without making
-those implementation details public in the daemon build. NFQUEUE and selected
-system calls are replaced with deterministic test doubles.
+## Host tests
 
-The suite covers:
+`tests/unit-tests.c` covers the daemon's logic with the host compiler:
 
-- IPv6 NFQUEUE payload validation and bounded range replacement
-- option rebuilding and checksum-state preservation
-- IPv6 extension-header and transport policy
-- RA validation, RDNSS rewriting/deduplication, DNSSL/PvD removal, SEND policy,
-  checksums, logging, and compaction failures
-- DHCPv6 envelope and option validation, DNS rewriting/deduplication, Domain
-  List removal, Authentication policy, checksums, logging, and compaction
-  failures
-- NFQUEUE callback accept/drop/change decisions, including fail-closed drops
-- configured multi-server DNS rewriting with packet expansion
-- automatic DNS snapshots, bridge fallback, refresh/retry timing, interface
-  removal/index reuse, last-known DNS fallback, temporary-file permissions/cleanup,
-  persistence failure, and allocation failure
-- callback-driven discovery, repeated callbacks without rediscovery, and reusable buffers
-- daemon argument, setup, poll, receive, and cleanup paths
-- formatting helpers, address lists, DUIDs, and transaction IDs
-- required UCI queue-number and optional DNS-list validation and procd arguments
-- advisory nftables checks for exact queue numbers, ranges, and inspection errors
+- option parsing: devices, DNS servers, limits, detach and invalid input
+- automatic DNS selection: a device's own ULA, else its bridge's, and which
+  addresses are ULAs
+- the exact log line for each verdict, kind and reason
 
-Run with installed development headers and libraries:
+`tests/init-tests.sh` covers `files/l2dns6rw.init` with procd, UCI and logger
+stubs: the required device, DNS servers and verbose passed to the daemon,
+validation errors, and the `detach` command.
 
 ```sh
-./tests/run-tests.sh
+sh tools/host-test.sh               # quiet, log in build/host-test.log
+sh tests/run-tests.sh               # direct
+SANITIZERS=1 sh tests/run-tests.sh  # AddressSanitizer and UBSan
+COVERAGE=1 sh tests/run-tests.sh    # gcov line and branch coverage
 ```
 
-On Ubuntu or Debian, install the native host build dependencies first:
+## BPF packet tests
+
+`tests/bpf/cases.py` builds 51 frames and the outcome each must have;
+`tests/bpf/runner.c` runs the program on them in a kernel with
+`BPF_PROG_TEST_RUN`, which needs root, and `cases.py check` verifies every
+rewrite option by option (the DNS list, removed and kept options, lengths,
+the checksum state).
+
+The cases cover RA and DHCPv6 rewrites with one, two and eight servers,
+compliant messages, duplicate DNS options, protected (SEND, Authentication)
+messages, bad and zero checksums, malformed options and headers, extension
+headers (within and beyond the limit), routing headers, fragments, jumbograms,
+truncation, the size and option limits, a device without DNS, and traffic
+that is not a target.
 
 ```sh
-sudo apt update
-sudo apt install build-essential cmake libnetfilter-queue-dev libnfnetlink-dev
+sh tests/bpf/run.sh                   # native build, run with sudo (CI)
+sh tests/bpf/run.sh root@192.168.56.2 # on a test VM, x86 SDK build
 ```
 
-Ubuntu's libtins package can be older than the API used by the production
-OpenWrt package. When no compatible native libtins is available, the test runner
-automatically prepares the OpenWrt package and builds a native copy from exactly
-that source under `tests/build/libtins-host`:
+## VM test
+
+`tools/vm-test/run.sh` installs the x86 package on an OpenWrt VM and sends an
+RA, a DHCPv6 Reply and a SEND-signed RA through a test bridge, checking what
+reaches the other side: configured servers, a daemon restart (link reuse),
+the daemon stopped (the pinned program keeps working), automatic mode, a
+recreated port, a missing and then added ULA, detach, idle wakeups, and the
+verbose log.
 
 ```sh
-./tests/run-tests.sh
+sh tools/sdk-build.sh x86
+sh tools/vm-test/run.sh root@192.168.56.2
 ```
-
-The native build disables packet capture, 802.11, examples, and libtins' own
-tests. The test runner selects the resulting local prefix automatically, so the
-normal coverage command remains:
-
-```sh
-cd package/vxlan-ipv6-sanitize
-COVERAGE=1 sh ./tests/run-tests.sh
-```
-
-Do not point the host test suite at OpenWrt's target staging directory. Those
-libraries are built for the target router architecture and cannot be linked
-into the test executable produced by the host compiler. Building the native
-copy does not modify or replace the production OpenWrt library.
-
-If libtins or libnetfilter_queue headers are in nonstandard locations:
-
-```sh
-LIBTINS_PREFIX=/path/to/libtins/prefix \
-NFQUEUE_INCLUDE_DIR=/path/to/netfilter/includes \
-NFNETLINK_INCLUDE_DIR=/path/to/nfnetlink/includes \
-./tests/run-tests.sh
-```
-
-Generate GCC line and branch coverage:
-
-```sh
-COVERAGE=1 ./tests/run-tests.sh
-```
-
-Run with AddressSanitizer and UndefinedBehaviorSanitizer:
-
-```sh
-SANITIZERS=1 ./tests/run-tests.sh
-```
-
-Run the synthetic packet-path benchmark after a normal test build:
-
-```sh
-./tests/build/unit-tests --benchmark
-```
-
-It reports time and C++ allocations per packet after warm-up for unchanged RA,
-rewritten RA, and rewritten DHCPv6 packets. NFQUEUE I/O is mocked, so this is
-a repeatable code-path comparison, not a router throughput measurement.
-
-The suite is host-side. It does not replace an OpenWrt integration test that
-loads a real nftables rule, sends packets through the configured NFQUEUE, and
-verifies the resulting bridge traffic.

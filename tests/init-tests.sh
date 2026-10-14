@@ -1,20 +1,20 @@
 #!/bin/sh
+# Tests files/l2dns6rw.init with procd, UCI and logger stubs.
 
 set -eu
 
 TEST_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$TEST_DIR/.." && pwd)
 
-NFT=nft
-TEST_QUEUE_NUMBER=
+TEST_DEVICES=
 TEST_DNS_SERVERS=
 TEST_VERBOSE=0
-TEST_RULESET=
-TEST_NFT_STATUS=0
+TEST_VALID=1
 PROCD_OPENED=0
 PROCD_COMMAND=
 PROCD_RESPAWN=
 LOG_MESSAGES=
+CALLS=
 
 config_load()
 {
@@ -23,7 +23,11 @@ config_load()
 
 config_get()
 {
-	eval "$1=\$TEST_QUEUE_NUMBER"
+	case "$3" in
+		device) eval "$1=\$TEST_DEVICES" ;;
+		dns_server) eval "$1=\$TEST_DNS_SERVERS" ;;
+		*) eval "$1=" ;;
+	esac
 }
 
 config_get_bool()
@@ -33,13 +37,7 @@ config_get_bool()
 
 uci_validate_section()
 {
-	dns_server="$TEST_DNS_SERVERS"
-	[ "$dns_server" != invalid ]
-}
-nft()
-{
-	printf '%s\n' "$TEST_RULESET"
-	return "$TEST_NFT_STATUS"
+	[ "$TEST_VALID" -eq 1 ]
 }
 
 logger()
@@ -79,7 +77,19 @@ procd_add_reload_trigger()
 	return 0
 }
 
+# rc.common's stop, and the daemon as detach() runs it.
+stop()
+{
+	CALLS="$CALLS stop"
+}
+
+fake_daemon()
+{
+	CALLS="$CALLS daemon $*"
+}
+
 . "$PROJECT_DIR/files/l2dns6rw.init"
+PROG=fake_daemon
 
 fail()
 {
@@ -95,109 +105,56 @@ expect_contains()
 	esac
 }
 
-# A matching rule is reported once at info level, never as a warning.
-expect_rule_found()
-{
-	[ "$LOG_MESSAGES" = " -s -t l2dns6rw -p daemon.info nftables rule found for NFQUEUE 321" ] || \
-		fail "$1"
-}
-
 reset_test_state()
 {
-	TEST_QUEUE_NUMBER=
+	TEST_DEVICES=
 	TEST_DNS_SERVERS=
 	TEST_VERBOSE=0
-	TEST_RULESET=
-	TEST_NFT_STATUS=0
+	TEST_VALID=1
 	PROCD_OPENED=0
 	PROCD_COMMAND=
 	PROCD_RESPAWN=
 	LOG_MESSAGES=
-	NFT_ARGUMENTS=
+	CALLS=
 }
-
-expect_invalid_queue()
-{
-	reset_test_state
-	TEST_QUEUE_NUMBER="$1"
-	if start_service; then
-		fail "queue '$1' unexpectedly started the service"
-	fi
-	[ "$PROCD_OPENED" -eq 0 ] || fail "invalid queue opened a procd instance"
-	expect_contains "$LOG_MESSAGES" "required option main.queue_number" \
-		"invalid queue did not log the required-option error"
-}
-
-expect_invalid_queue ""
-expect_invalid_queue "-1"
-expect_invalid_queue "abc"
-expect_invalid_queue "1x"
-expect_invalid_queue "65536"
-expect_invalid_queue "999999999999999999999999"
 
 reset_test_state
-TEST_QUEUE_NUMBER=321
+if start_service; then
+	fail "a missing device started the service"
+fi
+[ "$PROCD_OPENED" -eq 0 ] || fail "a missing device opened a procd instance"
+expect_contains "$LOG_MESSAGES" "required option main.device is missing" \
+	"a missing device did not log the required-option error"
+
+reset_test_state
+TEST_DEVICES='l2vl0 vxlan2'
 TEST_DNS_SERVERS='fd00::53 2001:db8::53'
 TEST_VERBOSE=1
-TEST_RULESET='table bridge test {
-	chain input {
-		queue num 321; bypass
-	}
-}'
 start_service || fail "start_service returned an error"
-[ "$PROCD_COMMAND" = "$PROG -q 321 -d fd00::53 -d 2001:db8::53 -v" ] || \
-	fail "configured queue and DNS servers were not passed to the daemon"
-expect_rule_found "matching nftables rule produced a warning"
-[ "$PROCD_RESPAWN" = "3600 5 5" ] || fail "respawn defaults changed"
+[ "$PROCD_COMMAND" = "fake_daemon -i l2vl0 -i vxlan2 -d fd00::53 -d 2001:db8::53 -v" ] || \
+	fail "devices, DNS servers and verbose were not passed to the daemon: $PROCD_COMMAND"
+[ "$PROCD_RESPAWN" = "3600 5 5" ] || fail "unexpected respawn parameters: $PROCD_RESPAWN"
+[ -z "$LOG_MESSAGES" ] || fail "a valid configuration logged: $LOG_MESSAGES"
 
 reset_test_state
-TEST_QUEUE_NUMBER=321
-TEST_DNS_SERVERS=invalid
+TEST_DEVICES='l2vl0'
+start_service || fail "start_service returned an error"
+[ "$PROCD_COMMAND" = "fake_daemon -i l2vl0" ] || \
+	fail "automatic mode passed more than the device: $PROCD_COMMAND"
+
+reset_test_state
+TEST_DEVICES='l2vl0'
+TEST_DNS_SERVERS='invalid'
+TEST_VALID=0
 if start_service; then
-	fail "invalid DNS server unexpectedly started the service"
+	fail "an invalid configuration started the service"
 fi
-[ "$PROCD_OPENED" -eq 0 ] || fail "invalid DNS server opened a procd instance"
-expect_contains "$LOG_MESSAGES" "main.dns_server must contain only IPv6 addresses" \
-	"invalid DNS server did not produce the expected error"
+[ "$PROCD_OPENED" -eq 0 ] || fail "an invalid configuration opened a procd instance"
+expect_contains "$LOG_MESSAGES" "must hold IPv6 addresses" \
+	"an invalid configuration did not log the validation error"
 
 reset_test_state
-TEST_QUEUE_NUMBER=321
-TEST_RULESET='table bridge test {
-	chain input {
-		queue num 320-322 fanout,bypass
-	}
-}'
-start_service || fail "start_service returned an error"
-expect_rule_found "matching nftables queue range produced a warning"
+detach
+[ "$CALLS" = " stop daemon -D" ] || fail "detach did not stop the service, then run the daemon with -D: $CALLS"
 
-reset_test_state
-TEST_QUEUE_NUMBER=321
-TEST_RULESET='table inet fw4 {
-	chain forward {
-		icmpv6 type 134 queue flags bypass to 321
-	}
-}'
-start_service || fail "start_service returned an error"
-expect_rule_found "modern nftables queue syntax produced a warning"
-
-reset_test_state
-TEST_QUEUE_NUMBER=321
-TEST_RULESET='table bridge test {
-	chain input {
-		queue num 100 bypass
-	}
-}'
-start_service || fail "start_service returned an error"
-[ "$PROCD_OPENED" -eq 1 ] || fail "missing nftables rule prevented startup"
-expect_contains "$LOG_MESSAGES" "no nftables rule queues packets to NFQUEUE 321; continuing" \
-	"missing nftables rule did not produce the expected warning"
-
-reset_test_state
-TEST_QUEUE_NUMBER=321
-TEST_NFT_STATUS=1
-start_service || fail "start_service returned an error"
-[ "$PROCD_OPENED" -eq 1 ] || fail "nftables inspection failure prevented startup"
-expect_contains "$LOG_MESSAGES" "could not inspect nftables rules for NFQUEUE 321; continuing" \
-	"nftables inspection failure did not produce the expected warning"
-
-printf 'PASS required UCI queue and nftables checks\n'
+printf 'PASS init script: devices, DNS servers, validation and detach\n'

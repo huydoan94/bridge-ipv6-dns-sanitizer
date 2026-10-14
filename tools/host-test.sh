@@ -4,8 +4,8 @@
 #
 # Usage: sh tools/host-test.sh
 #
-# The tests build against the host's libnetfilter-queue headers and a native
-# libtins (built once under tests/build when the host has none). The output
+# The daemon's logic is tested with the host compiler; the BPF program is
+# tested in the kernel by tests/bpf/run.sh, which needs root. The output
 # goes to build/host-test.log; the terminal shows it only when the tests fail
 # (its last 30 lines) or with VERBOSE=1 (all of it). Extra environment, such as
 # SANITIZERS=1 or COVERAGE=1, passes through to tests/run-tests.sh.
@@ -30,9 +30,9 @@ else
 	status=$?
 fi
 
-summary=$(grep -E '^[0-9]+ tests, [0-9]+ assertions, [0-9]+ failures$' "$log" | tail -n 1)
+summary=$(grep -E '^[0-9]+ checks, [0-9]+ failures$' "$log" | tail -n 1)
 if [ "$status" -eq 0 ]; then
-	echo "PASSED: ${summary:-host tests}; $(grep -c '^PASS required UCI' "$log") init-script suite"
+	echo "PASSED: unit tests ${summary:-?}; $(grep -c '^PASS init script' "$log") init-script suite"
 	exit 0
 fi
 

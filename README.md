@@ -1,7 +1,10 @@
 # l2dns6rw
 
-Small OpenWrt daemon that sanitizes IPv6 Router Advertisements and DHCPv6
-server replies received through VXLAN before they reach local clients.
+Small OpenWrt package that sanitizes IPv6 Router Advertisements and DHCPv6
+server replies arriving on chosen devices, typically the VXLAN port of a
+bridge, before they reach local clients. An eBPF program does the work at tcx
+ingress of each device; a small daemon attaches it and keeps its DNS list
+current.
 
 ## Packet flow
 
@@ -9,25 +12,20 @@ server replies received through VXLAN before they reach local clients.
 Remote VXLAN peer
       |
       v
-   VXLAN port
+VXLAN port (list device)
       |
       v
-bridge prerouting
-      |
-      v
-configured NFQUEUE
-      |
-      v
- libtins IPv6 parser
+tcx ingress: l2dns6rw.bpf.o
    /      |       \
   v       v        v
  RA     DHCPv6    other
  |        |         |
  v        v         |
-sanitize sanitize   |
+rewrite  rewrite    |
+or drop  or drop    |
    \      /         |
     v    v          |
-    verdict <--------+
+     bridge <-------+
       |
       v
  Local bridge clients
@@ -38,150 +36,104 @@ sanitize sanitize   |
 Router Advertisements:
 
 - Router Lifetime -> `0`
-- RDNSS -> configured DNS server list, or one automatically discovered local ULA
-- duplicate RDNSS addresses/options -> removed
+- the first RDNSS option -> the device's DNS list
+- later RDNSS options -> removed
 - DNSSL option 31 -> removed
 - PvD option 21 -> removed
 
 DHCPv6 Advertise/Reply packets (`547 -> 546`):
 
-- DNS Recursive Name Server option 23 -> the same selected DNS server list
-- duplicate DNS addresses/options -> removed
+- the first DNS Recursive Name Server option 23 -> the device's DNS list
+- later DNS options -> removed
 - Domain Search List option 24 -> removed
 
-When no DNS list is configured, the automatic DNS address is the first ULA
-(`fc00::/7`) found on the ingress interface or its bridge master.
+A message without an RDNSS or DNS option gets none added. Other options are
+kept in their order.
 
-Automatic discovery runs at startup and then from the packet callback, at most
-once every five seconds, so the daemon sleeps without timed wakeups until
-NFQUEUE delivers a packet. Each refresh takes one OS interface/address snapshot
-and resolves bridge membership; other packets use only the in-memory lookup. When discovery fails or an existing interface temporarily has no ULA,
-its last successfully cached DNS remains in use and is retried on the next
-refresh. Packets are dropped if neither ingress interface has a cached DNS. A newly resolved address replaces the old one. A successful snapshot still
-removes deleted interfaces and prevents reuse of cached DNS when an interface
-index belongs to a different interface name.
-
-The daemon saves a human-readable snapshot (interface index and DNS source) in
-an owner-only `/tmp/l2dns6rw-dns-XXXXXX` file and logs its actual path.
-It writes only when the snapshot changes, retries failed writes on the next
-refresh, and removes the file on normal shutdown. The file is diagnostic: it
-is never read per packet or trusted across restarts. A write failure does not
-disable the in-memory cache. Configured DNS lists bypass discovery entirely.
+The DNS list is `dns_server` when configured. Without it, each device uses
+its own first ULA (`fc00::/7`), else the first ULA of its bridge. The daemon
+recomputes that whenever the kernel reports a link or IPv6 address change; it
+has no timers. When a device briefly has no ULA, its last address stays in use.
 
 ## Packet handling
 
-- IPv6 extension-header traversal and transport discovery are delegated to libtins.
-- Routing, AH, ESP, Mobility, and other unsupported layouts pass unchanged.
-- Jumbograms and fragmented target RA/DHCPv6 packets are dropped.
-- If the IPv6 declared length exceeds the bytes delivered by NFQUEUE, the
-  packet is dropped.
-- If IPv6 or UDP declares a shorter region than NFQUEUE captured, only the
-  declared region is sanitized. Bytes after it are preserved unchanged.
-- If UDP declares more bytes than are available, the packet is dropped.
-- Packet and option buffers are reused. Outgoing netlink padding is explicitly
-  zeroed, and oversized verdict payloads are rejected.
-- Checksums are calculated only after validation confirms that a packet needs
-  editing. Unchanged, malformed, and protected packets avoid that work.
-- A rewrite that would not fit in an IPv6 packet or an NFQUEUE verdict, a
-  rejected verdict, and an allocation failure drop the packet.
-- A valid incoming checksum remains valid after sanitization.
-- An invalid incoming checksum remains deliberately invalid after sanitization.
-- NFQUEUE checksum-not-ready packets receive a correct checksum after editing.
+- Extension headers: up to 8 Hop-by-Hop and Destination Options headers are
+  walked. A longer chain is dropped, since it could hide a target.
+- Routing, AH, ESP and Mobility headers pass unchanged.
+- A first fragment of a target is dropped; later fragments and atomic
+  fragments pass unchanged.
+- Jumbograms, truncated targets (IPv6 or UDP length beyond the frame), and
+  devices without a DNS list are dropped.
+- A message is rewritten only up to 2048 bytes, and with up to 64 options.
+  A longer one, or one whose rewrite would exceed 2048 bytes, is dropped.
+- A valid incoming checksum stays valid; an invalid one stays deliberately
+  invalid. A zero UDP checksum counts as invalid (RFC 8200 8.1).
 - DHCPv6 Authentication option 11 and SEND RSA Signature option 12 are left
-  untouched. If a protected packet would require sanitization, it is dropped;
-  if no change is needed, it passes unchanged.
-- Other malformed or unsupported packets pass unchanged.
+  untouched. If such a packet would need a rewrite, it is dropped; if it needs
+  none, it passes unchanged.
+- Malformed options or headers pass unchanged; clients discard them anyway.
+- Bytes after the UDP message inside the IPv6 payload are removed when a
+  DHCPv6 message is rewritten.
 
-The queue fails closed: the rules have no `bypass`, so the kernel drops queued
-packets while the daemon is not running (stopped, crashed or restarting), and
-the daemon leaves `NFQA_CFG_F_FAIL_OPEN` off, so packets beyond a full queue are
-dropped too. Remote DNS settings therefore never pass unsanitized.
+## Attachment and restarts
+
+The program, its maps and each device's tcx link are pinned under
+`/sys/fs/bpf/l2dns6rw/`. The program keeps sanitizing while the daemon is
+stopped, restarting or crashed, using the last DNS list. A restarted daemon
+reuses the pinned maps and moves each link to its own program, so a restart
+or upgrade never leaves a gap.
+
+A device that disappears and reappears (for example when netifd recreates the
+VXLAN port) is attached again as soon as the kernel reports it. A device
+removed from the configuration is detached at the next start.
+
+To detach everything:
+
+```sh
+/etc/init.d/l2dns6rw detach
+```
+
+Removing the package also detaches it.
 
 ## Build
 
-The daemon uses OpenWrt's `libtins` package for IPv6 protocol parsing, protocol
-constants, formatting, and checksum helpers. Interface snapshots use the
-platform's getifaddrs API. It only
-needs libtins' core library; libpcap support can be disabled in libtins
-configuration if it is not otherwise needed on the target. The package declares
-`libnetfilter-queue` and `libtins` as explicit build dependencies so their
-headers and libraries are built and staged before the daemon is compiled. They
-also remain runtime dependencies of the installed daemon. The `nftables`
-utility is used at service startup to inspect the active ruleset.
+The package builds the program with OpenWrt's BPF toolchain (`bpf.mk`) and
+the daemon against `libbpf`, its only runtime dependency. The kernel needs
+tcx, which OpenWrt's 6.6 and newer kernels provide.
 
-The package's direct dependencies are `kmod-nft-queue`, `libnetfilter-queue`,
-`libtins`, and `nftables`. `kmod-nft-queue` selects `kmod-nfnetlink-queue`
-transitively. The example rules do not use the bridge-specific meta, reject, or
-conntrack extensions supplied by `kmod-nft-bridge`.
-
-The source directory is still named `package/vxlan-ipv6-sanitize`, so the OpenWrt
-build target retains that path.
-
-Add the package to your OpenWrt source tree, then run:
+With the repository linked into an SDK as `package/l2dns6rw`:
 
 ```sh
-make package/vxlan-ipv6-sanitize/compile V=s
+sh tools/sdk-build.sh x86        # or filogic
 ```
+
+It stages zlib, libelf and libbpf when the SDK lacks them, then runs
+`make package/l2dns6rw/compile NO_DEPS=1`. Set `NO_DEPS=` to let make build
+dependencies recursively instead.
 
 ## Tests
 
-The host-side unit suite exercises protocol validation, RA and DHCPv6 rewrite
-policy, checksums, logging, NFQUEUE verdict handling, and daemon failure paths.
-See `tests/README.md` for normal and branch-coverage commands.
+- `sh tools/host-test.sh`: the daemon's logic (option parsing, automatic DNS
+  selection, log lines) and the init script, with the host compiler.
+- `sh tests/bpf/run.sh [HOST]`: 51 packet cases run through the program in a
+  kernel with `BPF_PROG_TEST_RUN`, natively with sudo or on a test VM.
+- `sh tools/vm-test/run.sh [HOST]`: the installed package on an OpenWrt VM,
+  through a real bridge: rewrites, restarts, device recreation, automatic
+  DNS, detach and idle wakeups.
 
-If an earlier build failed with missing `tins/*.h` headers, rebuild the libtins
-staging files once before compiling this package again:
-
-```sh
-make package/feeds/packages/libtins/clean
-make package/feeds/packages/libtins/compile V=s
-make package/vxlan-ipv6-sanitize/clean
-make package/vxlan-ipv6-sanitize/compile V=s
-```
+See `tests/README.md` for details.
 
 ## Install
 
-Install the generated `.ipk`, then enable and start the service:
+Install the generated package, configure at least one device, then enable
+and start the service:
 
 ```sh
+uci add_list l2dns6rw.main.device='l2vl0'
+uci commit l2dns6rw
 /etc/init.d/l2dns6rw enable
 /etc/init.d/l2dns6rw start
 ```
-
-## nftables
-
-The package does **not** install nftables rules. Configure NFQUEUE yourself.
-
-When the service starts, it checks the active numeric nftables ruleset for the
-configured queue number, including queue ranges. If no matching rule is found,
-or if the ruleset cannot be inspected, it logs a warning and continues to run.
-This check does not modify the ruleset.
-
-An example is included at:
-
-```text
-examples/90-l2dns6rw.nft
-```
-
-Example rules:
-
-```nft
-table bridge bridge_ipv6_dns_sanitizer {
-    chain vxlan_ingress {
-        type filter hook prerouting priority filter; policy accept;
-
-        meta iifkind "vxlan" icmpv6 type nd-router-advert \
-            counter queue num 100
-
-        meta iifkind "vxlan" udp sport 547 udp dport 546 \
-            counter queue num 100
-    }
-}
-```
-
-The daemon accepts only bridge-family packets from the configured NFQUEUE. Linux
-exposes the IPv6 packet through `NFQA_PAYLOAD`; bridge L2 metadata is kept
-separately by the kernel.
 
 ## Configuration
 
@@ -195,20 +147,22 @@ Default:
 
 ```uci
 config sanitizer 'main'
-    option queue_number '100'
+    # list device 'l2vl0'
     option verbose '0'
     # list dns_server 'fd00::53'
     # list dns_server '2001:db8::53'
 ```
 
-`queue_number` is required and must be an integer from `0` through `65535`. The
-service logs an error and does not start when the option is missing or invalid.
-The nftables rules must use the same number.
+`device` is required and repeatable: the devices whose incoming RAs and DHCPv6
+replies are sanitized, at most 16. The service logs an error and does not
+start without one. A device that does not exist yet is attached when it
+appears.
 
-`dns_server` is optional and repeatable. If one or more entries are present,
-each must be an IPv6 address and the configured list replaces advertised RDNSS
-and DHCPv6 DNS addresses. If it is absent, automatic local-ULA discovery remains
-active. Up to 10 DNS servers may be configured.
+`dns_server` is optional and repeatable, up to 8 IPv6 addresses. Without it,
+each device's own or its bridge's ULA is used.
+
+`verbose` also logs each rewritten packet. Drops and malformed packets are
+always logged.
 
 Configure a DNS list and restart the service:
 
@@ -219,28 +173,15 @@ uci commit l2dns6rw
 /etc/init.d/l2dns6rw restart
 ```
 
-Delete the list to return to automatic local-ULA discovery:
+Delete the list to return to each device's own ULA:
 
 ```sh
 uci -q delete l2dns6rw.main.dns_server
 ```
 
-Enable verbose packet logging:
-
-```sh
-uci set l2dns6rw.main.verbose='1'
-uci commit l2dns6rw
-/etc/init.d/l2dns6rw restart
-```
-
-Change the queue number and restart the service after updating the corresponding
-nftables rules:
-
-```sh
-uci set l2dns6rw.main.queue_number='200'
-uci commit l2dns6rw
-/etc/init.d/l2dns6rw restart
-```
+Releases before the eBPF version used `option queue_number` and nftables
+NFQUEUE rules. Remove both: the option is ignored, and the rules would send
+packets to a queue nobody reads.
 
 ## Logs
 
@@ -248,35 +189,36 @@ uci commit l2dns6rw
 logread -f -e l2dns6rw
 ```
 
-At startup, the daemon reports its packaged version. The message text omits the
-redundant `l2dns6rw:` prefix because procd already identifies
-the process in the system log.
+Examples:
+
+```text
+l2vl0: sanitizing RA and DHCPv6 at ingress
+l2vl0: DNS fd00:abcd::1(br-lan)
+dev=l2vl0 type=RA from=fe80::a rewritten router-lifetime=1800->0 rdnss-options=1 rdnss-addresses=1 removed=1 bytes=72->48
+dev=l2vl0 type=RA from=fe80::a DROP: SEND-signed or authenticated message needs a rewrite
+packets seen=6 changed=4 unchanged=0 dropped=2 malformed=0
+```
 
 ## Formatting
 
-Multiword filenames use lowercase hyphens. C and C++ identifiers use underscores
-where required by the language.
-
-The included `.clang-format` follows `CODING_STYLE.md`: four-space indentation,
-no tabs, Linux-style braces, and one argument per line for substantial
-multi-line declarations and calls. `ColumnLimit: 0` avoids arbitrary wrapping;
-long expressions should be split where doing so improves readability.
+Multiword filenames use lowercase hyphens. The included `.clang-format`
+follows `CODING_STYLE.md`: four-space indentation, no tabs, Linux-style braces,
+and one argument per line for substantial multi-line declarations and calls.
 
 ## Source layout
 
 ```text
-.clang-format             project C++ formatting rules
 src/
-├── l2dns6rw.cpp daemon and packet sanitizers
-├── constants.h                     shared application and protocol constants
-├── network.cpp             interface and local-address discovery
-├── network.h
-├── packet.cpp              packet mutation and checksum mechanics
-├── packet.h
-├── packet-parser.cpp       libtins IPv6 transport parser
-├── packet-parser.h         parser interface
-├── logging.cpp             logging and log formatting
-└── logging.h
+├── l2dns6rw.bpf.c   the BPF program: parsing, rewrite, drop policy
+├── l2dns6rw-bpf.h   maps, counters and events shared with the daemon
+├── main.c           daemon: attach devices, follow kernel changes, log events
+├── program.c/.h     loading, pinning and attaching the program (libbpf)
+├── dns.c/.h         automatic DNS: a device's or its bridge's first ULA
+├── netlink.c/.h     link and IPv6 address change notifications
+├── events.c/.h      log lines for the program's events
+├── options.c/.h     command-line options
+├── log.c/.h         logging
+└── Makefile         daemon and BPF object
 ```
 
 ## License

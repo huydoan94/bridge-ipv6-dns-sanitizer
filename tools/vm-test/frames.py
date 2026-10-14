@@ -3,9 +3,9 @@
 the bridge, using only the standard library.
 
   frames.py write DIRECTORY           writes ra.bin, dhcp.bin and send.bin
-  frames.py check MODE DNS PCAP       checks a capture; MODE is rewrite or
-                                      dropped, DNS the expected servers,
-                                      comma-separated
+  frames.py check MODE DNS PCAP       checks a capture; MODE is rewrite,
+                                      dropped or unchanged, DNS the expected
+                                      servers, comma-separated
 
 Each .bin file holds frames as a 2-byte big-endian length and the bytes, as
 send-frames.c reads them. check prints one line per verdict and exits 1 when
@@ -146,6 +146,12 @@ def check(mode, dns, path):
         elif protocol == 17 and struct.unpack("!HH", payload[:4]) == (547, 546):
             seen["dhcp"].append((src, dst, payload, frame))
 
+    if mode == "unchanged":
+        expect([ra[3] for ra in seen["ra"]] == [router_advertisement(), send_advertisement()],
+               "both RAs passed byte-for-byte unchanged")
+        expect([dhcp[3] for dhcp in seen["dhcp"]] == [dhcpv6_reply()],
+               "the DHCPv6 Reply passed byte-for-byte unchanged")
+        return all(results)
     if mode == "dropped":
         expect(not seen["ra"], f"no RA passed (got {len(seen['ra'])})")
         expect(not seen["dhcp"], f"no DHCPv6 Reply passed (got {len(seen['dhcp'])})")

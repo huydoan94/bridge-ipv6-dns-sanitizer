@@ -11,8 +11,8 @@
 # an argument with a slash is the SDK directory. The SDK's package/l2dns6rw
 # must be a link to this repository.
 #
-# Build dependencies (libmnl, libnfnetlink, libnetfilter-queue, libtins) are
-# ready when the SDK's .config selects them and their staging stamp exists.
+# Build dependencies (zlib, libelf with its musl helpers, libbpf) are ready
+# when the SDK's .config selects them and their source's staging stamp exists.
 # A dependency that is not selected is added to .config as a module; one whose
 # recipe is missing is registered from its local feed with scripts/feeds; then
 # it is compiled into staging, using the build options in .config.
@@ -96,13 +96,15 @@ sdk_make() { # MAKE-ARGUMENTS...
 	return "$make_status"
 }
 
-# DEPENDENCY|FEED, in build order.
+# PACKAGE|SOURCE|FEED, in build order. libelf comes from the elfutils source,
+# which needs argp-standalone and, on musl, musl-fts.
 dependencies() {
 	cat <<'DEPENDENCIES'
-libmnl|base
-libnfnetlink|base
-libnetfilter-queue|packages
-libtins|packages
+zlib|zlib|base
+argp-standalone|argp-standalone|base
+musl-fts|musl-fts|base
+libelf|elfutils|base
+libbpf|libbpf|base
 DEPENDENCIES
 }
 
@@ -127,8 +129,11 @@ prepare_dependencies() {
 	[ "$#" -eq 1 ] && [ -d "$1" ] || fail 2 "expected one target staging directory in $sdk"
 	staging=$1
 	[ -f "$sdk/.config" ] || fail 2 "the SDK at $sdk has no .config"
-	dependencies | while IFS='|' read -r dependency feed; do
-		stamp=$staging/stamp/.${dependency}_installed
+	dependencies | while IFS='|' read -r dependency source feed; do
+		if [ "$dependency" = musl-fts ] && ! grep -q '^CONFIG_USE_MUSL=y$' "$sdk/.config"; then
+			continue
+		fi
+		stamp=$staging/stamp/.${source}_installed
 		if config_selected "$dependency" && [ -f "$stamp" ]; then
 			echo "$dependency: ready"
 			continue
@@ -137,10 +142,10 @@ prepare_dependencies() {
 			echo "$dependency: selecting in .config"
 			config_select "$dependency"
 		fi
-		target=package/feeds/$feed/$dependency
+		target=package/feeds/$feed/$source
 		if [ ! -f "$sdk/$target/Makefile" ]; then
 			echo "$dependency: registering from the local $feed feed"
-			(cd "$sdk" && ./scripts/feeds install -p "$feed" "$dependency") >>"$log" 2>&1 &&
+			(cd "$sdk" && ./scripts/feeds install -p "$feed" "$source") >>"$log" 2>&1 &&
 				[ -f "$sdk/$target/Makefile" ] ||
 				fail_log 3 "could not register $dependency from the local $feed feed"
 		fi
