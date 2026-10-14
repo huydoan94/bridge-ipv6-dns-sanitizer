@@ -11,11 +11,11 @@
 # VM's host key is kept in build/vm-known_hosts, never in ~/.ssh/known_hosts.
 #
 # Cases: rewrite with one and with two configured DNS servers (the packet
-# grows), and with the bridge's ULA
-# (automatic mode), each also sending a SEND-signed RA that must be dropped;
-# the bypass path with no listener; and a 30 s idle check of the daemon's
-# wakeups. Raw evidence (captures, daemon logs, results) goes to
-# build/vm-test/.
+# grows) and with the bridge's ULA (automatic mode), each also sending a
+# SEND-signed RA that must be dropped; automatic mode with no ULA, and no
+# daemon at all, where everything queued must be dropped; and a 30 s idle
+# check of the daemon's wakeups. Raw evidence (captures, daemon logs,
+# results) goes to build/vm-test/.
 #
 # Exit status: 0 all checks passed, 1 a check failed or the run broke.
 set -eu
@@ -68,7 +68,8 @@ run_case() { # NAME MODE DNS ARG...
 run_case configured rewrite fd00::53 -d fd00::53
 run_case two-servers rewrite fd00::53,fd00::54 -d fd00::53 -d fd00::54
 run_case automatic rewrite fd00:abcd::1 auto
-run_case bypass bypass - none
+run_case automatic-no-ula dropped - auto-no-ula
+run_case no-listener dropped - none
 
 echo "== idle"
 remote 'sh /tmp/l2t/vm.sh idle 30 -d fd00::53' | tee "$out/idle.txt"

@@ -9,7 +9,8 @@
 #   vm.sh case NAME [ARG...]    captures on vB while sending ra.bin, dhcp.bin
 #                               and send.bin from vA; ARG... starts the daemon
 #                               with those arguments, "auto" with none (the
-#                               automatic DNS mode), "none" runs no daemon
+#                               automatic DNS mode), "auto-no-ula" likewise
+#                               with br-l2t's ULA removed, "none" runs none
 #   vm.sh idle SECONDS ARG...   counts the daemon's context switches while idle
 #   vm.sh teardown              removes everything setup created
 #
@@ -35,8 +36,8 @@ setup() {
 table bridge l2t {
 	chain prerouting {
 		type filter hook prerouting priority filter; policy accept;
-		iifname "vA-br" icmpv6 type nd-router-advert counter queue num 100 bypass
-		iifname "vA-br" udp sport 547 udp dport 546 counter queue num 100 bypass
+		iifname "vA-br" icmpv6 type nd-router-advert counter queue num 100
+		iifname "vA-br" udp sport 547 udp dport 546 counter queue num 100
 	}
 }
 RULES
@@ -62,6 +63,10 @@ run_case() { # NAME ARG...
 	case $1 in
 	none) : >"$dir/$name.log" ;;
 	auto) start_daemon "$name" ;;
+	auto-no-ula)
+		ip -6 addr del fd00:abcd::1/64 dev br-l2t
+		start_daemon "$name"
+		;;
 	*) start_daemon "$name" "$@" ;;
 	esac
 	for frames in ra dhcp send; do
@@ -74,6 +79,7 @@ run_case() { # NAME ARG...
 		kill "$daemon"
 		wait "$daemon" 2>/dev/null || true
 	fi
+	[ "$1" != auto-no-ula ] || ip -6 addr add fd00:abcd::1/64 dev br-l2t nodad
 	nft list chain bridge l2t prerouting | sed -n 's/.*counter \(packets [0-9]* bytes [0-9]*\).*/\1/p' |
 		tr '\n' ';' | sed 's/^/nft counters: /; s/$/\n/'
 	echo "--- daemon log ($name)"
@@ -109,5 +115,5 @@ setup) setup ;;
 case) run_case "$@" ;;
 idle) idle "$@" ;;
 teardown) teardown ;;
-*) sed -n '2,16p' "$0" >&2; exit 2 ;;
+*) sed -n '2,17p' "$0" >&2; exit 2 ;;
 esac
