@@ -18,8 +18,6 @@ env:
   PACKAGE_NAME: l2dns6rw
   OPENWRT_REF: openwrt-25.12
   SDK_VERSION_SUFFIX: "-openwrt-25.12"
-  # The libtins tag OpenWrt's packages feed builds (PKG_SOURCE_VERSION).
-  LIBTINS_REF: v4.5
 
 jobs:
   version:
@@ -74,12 +72,33 @@ jobs:
       - name: Install test dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake libnetfilter-queue-dev libnfnetlink-dev
 
-      # The runner has no OpenWrt tree to extract libtins from, so the native
-      # copy is built from the same upstream tag the OpenWrt package uses.
-      - name: Build native libtins ${{ env.LIBTINS_REF }}
+      # The tests link OpenWrt's libtins package: whatever version and patches
+      # its recipe in the packages feed has on the release branch the build
+      # uses. The runner has no OpenWrt tree, so the native copy is built from
+      # that recipe's source and patches.
+      - name: Checkout OpenWrt's libtins recipe
+        uses: actions/checkout@v4
+        with:
+          repository: openwrt/packages
+          ref: ${{ env.OPENWRT_REF }}
+          path: openwrt-packages
+          fetch-depth: 1
+          sparse-checkout: libs/libtins
+
+      - name: Build native libtins from the OpenWrt recipe
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch "$LIBTINS_REF" https://github.com/mfontanini/libtins.git "$RUNNER_TEMP/libtins"
+          recipe=openwrt-packages/libs/libtins
+          version=$(sed -n 's/^PKG_VERSION:=//p' "$recipe/Makefile")
+          ref=$(sed -n 's/^PKG_SOURCE_VERSION:=//p' "$recipe/Makefile" | sed "s/\$(PKG_VERSION)/$version/")
+          url=$(sed -n 's/^PKG_SOURCE_URL:=//p' "$recipe/Makefile")
+          echo "OpenWrt libtins $version: $url at $ref"
+          git clone --depth 1 --branch "$ref" "$url" "$RUNNER_TEMP/libtins"
+          for patch in "$recipe"/patches/*.patch; do
+            [ -e "$patch" ] || continue
+            echo "applying $(basename "$patch")"
+            patch -d "$RUNNER_TEMP/libtins" -p1 < "$patch"
+          done
           LIBTINS_SOURCE_DIR="$RUNNER_TEMP/libtins" sh tests/build-host-libtins.sh
 
       - name: Run unit and init-script tests
