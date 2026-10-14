@@ -1,0 +1,13 @@
+{
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/compile_commands.json",
+    "C_Cpp.default.cppStandard": "gnu++11",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/src"
+    ],
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}"
+    ],
+    "files.associations": {
+        "*.h": "cpp"
+    }
+}

@@ -1,1 +1,6 @@
-.vscode/c_cpp_properties.json
+/build/
+/bin/
+compile_commands.json
+
+# Local agent handoff: serves only the user's own agents, never committed.
+/HANDOFF.md
