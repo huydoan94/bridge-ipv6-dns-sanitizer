@@ -2,8 +2,13 @@ name: Build OpenWrt package
 
 on:
   push:
+    # A tag builds and publishes its release. On main, only a change of
+    # PKG_VERSION or PKG_RELEASE builds; it then creates tag v<PKG_VERSION>
+    # and its release in this run, because a tag pushed with GITHUB_TOKEN
+    # starts no workflow.
     tags: ["v*"]
-  pull_request:
+    branches: [main]
+    paths: [Makefile]
   workflow_dispatch:
 
 permissions:
@@ -13,10 +18,77 @@ env:
   PACKAGE_NAME: l2dns6rw
   OPENWRT_REF: openwrt-25.12
   SDK_VERSION_SUFFIX: "-openwrt-25.12"
+  # The libtins tag OpenWrt's packages feed builds (PKG_SOURCE_VERSION).
+  LIBTINS_REF: v4.5
 
 jobs:
+  version:
+    name: Check package version
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare PKG_VERSION and PKG_RELEASE with the previous commit
+        id: check
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          version() { sed -n 's/^PKG_VERSION:=//p; s/^PKG_RELEASE:=//p' | paste -sd- -; }
+          current=$(version < Makefile)
+          tag="v$(sed -n 's/^PKG_VERSION:=//p' Makefile)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" != push ] || [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "Not a branch push: build."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          previous=
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            previous=$(git show "$BEFORE:Makefile" | version)
+          fi
+          if [ "$current" = "$previous" ]; then
+            echo "Version $current unchanged: skip."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          elif git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "Version changed to $current, but $tag already exists and its push built it: skip."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version changed from ${previous:-none} to $current: build and release $tag."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: Host tests
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libnetfilter-queue-dev libnfnetlink-dev
+
+      # The runner has no OpenWrt tree to extract libtins from, so the native
+      # copy is built from the same upstream tag the OpenWrt package uses.
+      - name: Build native libtins ${{ env.LIBTINS_REF }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$LIBTINS_REF" https://github.com/mfontanini/libtins.git "$RUNNER_TEMP/libtins"
+          LIBTINS_SOURCE_DIR="$RUNNER_TEMP/libtins" sh tests/build-host-libtins.sh
+
+      - name: Run unit and init-script tests
+        run: VERBOSE=1 sh tools/host-test.sh
+
   generate-matrix:
     name: Discover OpenWrt architectures
+    needs: version
+    if: needs.version.outputs.build == 'true'
     runs-on: ubuntu-latest
     outputs:
       arches: ${{ steps.dump.outputs.arches }}
@@ -42,7 +114,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.arch }}
-    needs: [generate-matrix]
+    needs: [test, generate-matrix]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -60,6 +132,7 @@ jobs:
           path: ${{ env.PACKAGE_NAME }}
           fetch-depth: 0
 
+      # libtins and libnetfilter-queue come from the SDK's default feeds.
       - name: Build l2dns6rw for ${{ matrix.arch }}
         uses: openwrt/gh-action-sdk@main
         env:
@@ -68,16 +141,21 @@ jobs:
           NO_REFRESH_CHECK: true
           IGNORE_ERRORS: n
 
+      # All or nothing: a package missing or failed on any architecture fails
+      # this job, and the release then publishes nothing.
       - name: Collect l2dns6rw packages
         env:
           PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          while IFS= read -r -d '' package; do
-            cp "$package" "dist/${PACKAGE_ARCH}_$(basename "$package")"
-          done < <(find "bin/packages/$PACKAGE_ARCH" -type f \( -name 'l2dns6rw-*.apk' -o -name 'l2dns6rw_*.ipk' \) -print0)
-          test -n "$(find dist -type f -print -quit)"
+          mapfile -d '' found < <(find "bin/packages/$PACKAGE_ARCH" -type f \( -name "$PACKAGE_NAME-[0-9]*.apk" -o -name "${PACKAGE_NAME}_[0-9]*.ipk" \) -print0)
+          if [ "${#found[@]}" -ne 1 ]; then
+            echo "expected one $PACKAGE_NAME package, found ${#found[@]}: ${found[*]}" >&2
+            exit 1
+          fi
+          cp "${found[0]}" "dist/${PACKAGE_ARCH}_$(basename "${found[0]}")"
+          ls -l dist
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
@@ -95,8 +173,10 @@ jobs:
 
   release:
     name: Publish release assets
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, build]
+    # A push that reached here is a tag or a version change; a manual run
+    # releases only when started on a tag.
+    if: github.event_name == 'push' || github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -108,8 +188,11 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # On a tag push this is that tag; on main it creates the tag at this commit.
       - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           fail_on_unmatched_files: true
