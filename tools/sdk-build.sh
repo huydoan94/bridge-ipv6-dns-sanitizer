@@ -27,7 +27,7 @@
 # missing, 4 compile error, 1 any other failure.
 set -u
 
-repo=$(cd "$(dirname "$0")/.." && pwd)
+repo=$(cd "$(dirname "$0")/.." && pwd -P)
 package=l2dns6rw
 prepare_only=
 sdk_argument=

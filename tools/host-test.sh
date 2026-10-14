@@ -13,7 +13,7 @@
 # Exit status: 0 all passed, 4 compile error, 5 a test failed, 1 any other failure.
 set -u
 
-repo=$(cd "$(dirname "$0")/.." && pwd)
+repo=$(cd "$(dirname "$0")/.." && pwd -P)
 mkdir -p "$repo/build"
 log=$repo/build/host-test.log
 

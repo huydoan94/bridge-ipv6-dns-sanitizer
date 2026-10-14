@@ -12,7 +12,7 @@
 # this machine and is not committed.
 set -eu
 
-repo=$(cd "$(dirname "$0")/.." && pwd)
+repo=$(cd "$(dirname "$0")/.." && pwd -P)
 . "$repo/tools/sdk-resolve.sh"
 sdk_resolve "${1:-x86}"
 [ -d "$sdk" ] || { echo "$0: no SDK at $sdk${variable:+; set $variable}" >&2; exit 1; }
