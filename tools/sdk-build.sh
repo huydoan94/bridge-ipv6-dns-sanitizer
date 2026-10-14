@@ -1,7 +1,8 @@
 #!/bin/sh
 # sdk-build.sh: cleans and compiles the l2dns6rw package in an OpenWrt SDK,
 # then says why the build failed, if it did. It stages the package's build
-# dependencies first and never recurses into other packages or the kernel.
+# dependencies first and, by default, never recurses into other packages or
+# the kernel.
 #
 # Usage: sh tools/sdk-build.sh [--prepare-only] NAME|DIRECTORY
 #
@@ -11,11 +12,17 @@
 # must be a link to this repository.
 #
 # Build dependencies (libmnl, libnfnetlink, libnetfilter-queue, libtins) are
-# staged with NO_DEPS=1 when their headers or libraries are missing; a recipe
-# that is only in a local feed is registered with scripts/feeds first. libtins
-# is staged without PCAP support, which the daemon does not use. Compilation may
-# download sources missing from the SDK's dl/ cache. --prepare-only stages the
-# dependencies without building the package.
+# ready when the SDK's .config selects them and their staging stamp exists.
+# A dependency that is not selected is added to .config as a module; one whose
+# recipe is missing is registered from its local feed with scripts/feeds; then
+# it is compiled into staging, using the build options in .config.
+#
+# NO_DEPS mirrors OpenWrt's switch and defaults to 1: make builds only the named
+# package. NO_DEPS= or NO_DEPS=0 lets make build each package's dependencies
+# recursively too (for an SDK not prepared yet); any other value means 1. The
+# script always passes NO_DEPS on make's command line, so the value it chose
+# wins over the environment. Compilation may download sources missing from the SDK's dl/ cache.
+# --prepare-only prepares the dependencies without building the package.
 #
 # The output of make goes only to build/sdk-<name>.log; the terminal shows this
 # script's own messages and, when a build fails, the errors found in the log
@@ -26,6 +33,12 @@
 # Exit status: 0 built, 2 SDK missing or not set up, 3 libraries or headers
 # missing, 4 compile error, 1 any other failure.
 set -u
+
+# OpenWrt skips dependencies for any non-empty NO_DEPS; here 0 also means off.
+case ${NO_DEPS-1} in
+'' | 0) no_deps= ;;
+*) no_deps=1 ;;
+esac
 
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 package=l2dns6rw
@@ -83,57 +96,59 @@ sdk_make() { # MAKE-ARGUMENTS...
 	return "$make_status"
 }
 
-# DEPENDENCY|FEED|LOCAL-PATH|EXTRA-MAKE-ARGUMENTS|ARTIFACTS, in build order.
+# DEPENDENCY|FEED, in build order.
 dependencies() {
 	cat <<'DEPENDENCIES'
-libmnl|base|libs/libmnl||usr/include/libmnl/libmnl.h usr/lib/libmnl.so
-libnfnetlink|base|libs/libnfnetlink||usr/include/libnfnetlink/libnfnetlink.h usr/lib/libnfnetlink.so
-libnetfilter-queue|packages|libs/libnetfilter-queue||usr/include/libnetfilter_queue/libnetfilter_queue.h usr/lib/libnetfilter_queue.so
-libtins|packages|libs/libtins|CONFIG_LIBTINS_ENABLE_PCAP=|usr/include/tins/tins.h usr/lib/libtins.so
+libmnl|base
+libnfnetlink|base
+libnetfilter-queue|packages
+libtins|packages
 DEPENDENCIES
 }
 
-elf_signature() { # PATH: class, byte order and machine of an ELF file.
-	LC_ALL=C readelf -h "$1" 2>/dev/null | sed -n '/Class:/p; /Data:/p; /Machine:/p'
+config_selected() { # DEPENDENCY
+	grep -Eq "^CONFIG_PACKAGE_$1=[ym]$" "$sdk/.config"
 }
 
-dependency_ready() { # ARTIFACTS
-	for artifact in $1; do
-		[ -f "$staging/$artifact" ] || return 1
-		case $artifact in
-		*.so) [ "$(elf_signature "$staging/$artifact")" = "$target_elf" ] || return 1 ;;
-		esac
-	done
+# Selects DEPENDENCY as a module in the SDK's .config, so later builds see it.
+config_select() { # DEPENDENCY
+	if grep -q "^# CONFIG_PACKAGE_$1 is not set$" "$sdk/.config"; then
+		sed -i "s/^# CONFIG_PACKAGE_$1 is not set$/CONFIG_PACKAGE_$1=m/" "$sdk/.config"
+	else
+		echo "CONFIG_PACKAGE_$1=m" >>"$sdk/.config"
+	fi
 }
 
+# A dependency is ready when the SDK's .config selects it and its build left
+# the staging stamp; otherwise it is selected, registered from its local feed
+# when the recipe is missing, and compiled into staging.
 prepare_dependencies() {
 	set -- "$sdk"/staging_dir/target-*
 	[ "$#" -eq 1 ] && [ -d "$1" ] || fail 2 "expected one target staging directory in $sdk"
 	staging=$1
-	set -- "$sdk"/staging_dir/toolchain-*/lib/libgcc_s.so.1
-	[ "$#" -eq 1 ] && [ -f "$1" ] || fail 2 "expected one staged toolchain with libgcc_s.so.1 in $sdk"
-	target_elf=$(elf_signature "$1")
-	[ -n "$target_elf" ] || fail 2 "cannot read the target ELF type from $1"
-	dependencies | while IFS='|' read -r dependency feed local_path extra artifacts; do
-		if dependency_ready "$artifacts"; then
+	[ -f "$sdk/.config" ] || fail 2 "the SDK at $sdk has no .config"
+	dependencies | while IFS='|' read -r dependency feed; do
+		stamp=$staging/stamp/.${dependency}_installed
+		if config_selected "$dependency" && [ -f "$stamp" ]; then
 			echo "$dependency: ready"
 			continue
 		fi
+		if ! config_selected "$dependency"; then
+			echo "$dependency: selecting in .config"
+			config_select "$dependency"
+		fi
 		target=package/feeds/$feed/$dependency
 		if [ ! -f "$sdk/$target/Makefile" ]; then
-			[ -f "$sdk/feeds/$feed/$local_path/Makefile" ] ||
-				fail 3 "the local $feed feed lacks $dependency ($local_path); update that feed first"
 			echo "$dependency: registering from the local $feed feed"
-			(cd "$sdk" && ./scripts/feeds install -p "$feed" "$dependency") >>"$log" 2>&1 ||
+			(cd "$sdk" && ./scripts/feeds install -p "$feed" "$dependency") >>"$log" 2>&1 &&
+				[ -f "$sdk/$target/Makefile" ] ||
 				fail_log 3 "could not register $dependency from the local $feed feed"
 		fi
-		echo "$dependency: staging ($target)"
-		# shellcheck disable=SC2086 # extra holds make assignments without spaces.
-		set -- NO_DEPS=1 CONFIG_ALL= CONFIG_ALL_NONSHARED= "CONFIG_PACKAGE_$dependency=m" $extra
+		echo "$dependency: installing ($target)"
+		set -- "NO_DEPS=$no_deps" CONFIG_ALL= CONFIG_ALL_NONSHARED=
 		sdk_make -C "$sdk" "$target/clean" "$@" && sdk_make -C "$sdk" "$target/compile" "$@" ||
-			fail_log 3 "could not stage $dependency"
-		dependency_ready "$artifacts" ||
-			fail_log 3 "staging $dependency did not produce: $artifacts"
+			fail_log 3 "could not build $dependency"
+		[ -f "$stamp" ] || fail_log 3 "building $dependency left no staging stamp ($stamp)"
 	done || exit
 }
 
@@ -150,7 +165,6 @@ link=$(readlink -f "$sdk/package/$package" 2>/dev/null)
 [ "$link" = "$repo" ] ||
 	fail 2 "$sdk/package/$package does not point to this repository (it is: ${link:-missing})" \
 		"Fix it with: ln -sfn $repo $sdk/package/$package"
-command -v readelf >/dev/null || fail 2 "readelf is needed to check staged libraries"
 
 mkdir -p "$repo/build"
 log=$repo/build/sdk-$name.log
@@ -163,7 +177,7 @@ if [ -n "$prepare_only" ]; then
 fi
 
 echo "Building $package in $sdk"
-selection="NO_DEPS=1 CONFIG_PACKAGE_$package=m"
+selection="NO_DEPS=$no_deps CONFIG_PACKAGE_$package=m"
 # shellcheck disable=SC2086 # selection holds make assignments without spaces.
 sdk_make -C "$sdk" "package/$package/clean" $selection &&
 	sdk_make -C "$sdk" "package/$package/compile" $selection
