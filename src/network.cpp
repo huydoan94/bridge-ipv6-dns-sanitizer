@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <system_error>
 
-static bool get_bridge_master(const std::string& interface_name, std::string& master)
+static bool get_bridge_master(const std::string &interface_name, std::string &master)
 {
     const std::string path = SYSFS_NETWORK_DIRECTORY + interface_name + SYSFS_BRIDGE_MASTER_LINK;
     char target[SYSFS_LINK_BUFSIZE];
@@ -32,7 +32,7 @@ struct interface_dns {
 
 // One OS snapshot replaces the old repeated interface/address enumeration.
 static std::map<uint32_t, local_dns_source> discover_local_dns(
-    const std::map<uint32_t, local_dns_source>& previous
+    const std::map<uint32_t, local_dns_source> &previous
 )
 {
     ifaddrs *raw = nullptr;
@@ -43,7 +43,7 @@ static std::map<uint32_t, local_dns_source> discover_local_dns(
     for (const ifaddrs *item = addresses.get(); item != nullptr; item = item->ifa_next) {
         if (item->ifa_addr == nullptr)
             continue;
-        auto& interface = interfaces[item->ifa_name];
+        auto &interface = interfaces[item->ifa_name];
         if (item->ifa_addr->sa_family == AF_PACKET) {
             const auto *link = reinterpret_cast<const sockaddr_ll *>(item->ifa_addr);
             interface.index = static_cast<uint32_t>(link->sll_ifindex);
@@ -55,14 +55,14 @@ static std::map<uint32_t, local_dns_source> discover_local_dns(
     }
 
     std::map<uint32_t, local_dns_source> result;
-    for (const auto& item : interfaces) {
+    for (const auto &item : interfaces) {
         if (item.second.index == 0)
             continue;
         const auto *source = &item;
         if (source->second.servers.empty()) {
             std::string master;
-            const auto bridge = get_bridge_master(item.first, master) ?
-                interfaces.find(master) : interfaces.end();
+            const auto bridge =
+                get_bridge_master(item.first, master) ? interfaces.find(master) : interfaces.end();
             if (bridge == interfaces.end() || bridge->second.servers.empty()) {
                 const auto cached = previous.find(item.second.index);
                 // An interface index may be reused by a different interface.
@@ -73,11 +73,13 @@ static std::map<uint32_t, local_dns_source> discover_local_dns(
             source = &*bridge;
         }
         char description[LOCAL_DNS_TEXT_BUFSIZE];
-        format_local_dns_log(&source->second.servers.front(), source->first.c_str(),
-                             description, sizeof(description));
-        result.emplace(item.second.index, local_dns_source{
-            source->second.servers, description, item.first
-        });
+        format_local_dns_log(
+            &source->second.servers.front(),
+            source->first.c_str(),
+            description,
+            sizeof(description)
+        );
+        result.emplace(item.second.index, local_dns_source{source->second.servers, description, item.first});
     }
     return result;
 }
@@ -97,7 +99,7 @@ void local_dns_cache::close_file()
     }
 }
 
-void local_dns_cache::save(const std::string& snapshot)
+void local_dns_cache::save(const std::string &snapshot)
 {
     if (file_ != nullptr && snapshot == saved_snapshot_)
         return;
@@ -130,18 +132,19 @@ void local_dns_cache::save(const std::string& snapshot)
     saved_snapshot_ = snapshot;
 }
 
-void local_dns_cache::refresh(clock::time_point now)
+void local_dns_cache::rescan(clock::time_point now)
 {
-    if (now < next_refresh_)
-        return;
     next_refresh_ = now + std::chrono::seconds(DNS_REFRESH_SECONDS);
 
     try {
         auto entries = discover_local_dns(entries_);
         entries_.swap(entries);
-    } catch (const std::exception& error) {
-        log_error("automatic DNS discovery failed: %s; retaining cached DNS and retrying in %u seconds",
-                  error.what(), DNS_REFRESH_SECONDS);
+    } catch (const std::exception &error) {
+        log_error(
+            "automatic DNS discovery failed: %s; retaining cached DNS and retrying in %u seconds",
+            error.what(),
+            DNS_REFRESH_SECONDS
+        );
     }
 
     if (entries_.empty() && !missing_reported_)
@@ -152,13 +155,16 @@ void local_dns_cache::refresh(clock::time_point now)
 
     try {
         std::string snapshot;
-        for (const auto& item : entries_)
+        for (const auto &item : entries_)
             snapshot += std::to_string(item.first) + " " + item.second.description + "\n";
         save(snapshot);
-    } catch (const std::exception& error) {
+    } catch (const std::exception &error) {
         // Persistence is diagnostic; packet processing can use the memory cache.
-        log_error("automatic DNS cache persistence failed: %s; retrying in %u seconds",
-                  error.what(), DNS_REFRESH_SECONDS);
+        log_error(
+            "automatic DNS cache persistence failed: %s; retrying in %u seconds",
+            error.what(),
+            DNS_REFRESH_SECONDS
+        );
     }
 }
 

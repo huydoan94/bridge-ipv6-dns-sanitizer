@@ -29,21 +29,24 @@ struct ipv6_packet_view {
     size_t captured_len;
 };
 
-
 uint16_t read_be16(const uint8_t *p);
 enum ipv6_packet_result parse_nfqueue_ipv6_payload(
     uint8_t *payload,
     size_t payload_len,
     struct ipv6_packet_view *view
 );
+// Copies the packet into buffer with extra_capacity spare bytes for growth.
+void ipv6_packet_move(
+    struct ipv6_packet_view *packet,
+    std::vector<uint8_t> &buffer,
+    size_t extra_capacity
+);
 int ipv6_packet_replace(
     struct ipv6_packet_view *packet,
     uint8_t *start,
     size_t old_len,
-    const std::vector<uint8_t>& replacement
+    const std::vector<uint8_t> &replacement
 );
-
-
 uint16_t icmpv6_checksum(
     const struct ip6_hdr *ip6h,
     const uint8_t *icmp,

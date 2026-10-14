@@ -12,9 +12,14 @@
 uint16_t read_be16(const uint8_t *p)
 {
     uint16_t network_value;
-
     std::memcpy(&network_value, p, sizeof(network_value));
     return Tins::Endian::be_to_host(network_value);
+}
+
+static void ipv6_packet_update_ends(struct ipv6_packet_view *packet)
+{
+    packet->declared_end = packet->data + packet->declared_len;
+    packet->captured_end = packet->data + packet->captured_len;
 }
 
 static bool has_ipv6_version(const uint8_t *packet)
@@ -30,45 +35,45 @@ enum ipv6_packet_result parse_nfqueue_ipv6_payload(
     struct ipv6_packet_view *view
 )
 {
-    const size_t ipv6_payload_len_offset = offsetof(struct ip6_hdr, ip6_plen);
-    uint16_t ipv6_payload_len;
-    size_t ipv6_packet_len;
-
-    if (
-        payload == nullptr ||
-        view == nullptr ||
-        payload_len < sizeof(struct ip6_hdr) ||
-        !has_ipv6_version(payload)
-    ) {
+    if (payload_len < sizeof(struct ip6_hdr) || !has_ipv6_version(payload))
         return IPV6_PACKET_PASSTHROUGH;
-    }
 
-    ipv6_payload_len = read_be16(payload + ipv6_payload_len_offset);
-    if (ipv6_payload_len == 0) {
+    const uint16_t ipv6_payload_len = read_be16(payload + offsetof(struct ip6_hdr, ip6_plen));
+    if (ipv6_payload_len == 0)
         return IPV6_PACKET_PASSTHROUGH;
-    }
 
-    ipv6_packet_len = sizeof(struct ip6_hdr) + ipv6_payload_len;
-    if (ipv6_packet_len > payload_len) {
+    const size_t ipv6_packet_len = sizeof(struct ip6_hdr) + ipv6_payload_len;
+    if (ipv6_packet_len > payload_len)
         return IPV6_PACKET_TRUNCATED;
-    }
 
     view->data = payload;
     view->header = reinterpret_cast<struct ip6_hdr *>(payload);
     view->declared_len = ipv6_packet_len;
     view->captured_len = payload_len;
-    view->declared_end = payload + ipv6_packet_len;
-    view->captured_end = payload + payload_len;
+    ipv6_packet_update_ends(view);
     view->capacity_end = view->captured_end;
     return IPV6_PACKET_OK;
 }
 
+void ipv6_packet_move(
+    struct ipv6_packet_view *packet,
+    std::vector<uint8_t> &buffer,
+    size_t extra_capacity
+)
+{
+    buffer.resize(NLA_ALIGN(packet->captured_len + extra_capacity));
+    std::memcpy(buffer.data(), packet->data, packet->captured_len);
+    packet->data = buffer.data();
+    packet->header = reinterpret_cast<struct ip6_hdr *>(packet->data);
+    ipv6_packet_update_ends(packet);
+    packet->capacity_end = packet->captured_end + extra_capacity;
+}
 
 int ipv6_packet_replace(
     struct ipv6_packet_view *packet,
     uint8_t *start,
     size_t old_len,
-    const std::vector<uint8_t>& replacement
+    const std::vector<uint8_t> &replacement
 )
 {
     if (
@@ -80,13 +85,11 @@ int ipv6_packet_replace(
     }
 
     const size_t payload_len = Tins::Endian::be_to_host(packet->header->ip6_plen);
-    if (old_len > payload_len || replacement.size() > UINT16_MAX - (payload_len - old_len)) {
+    if (old_len > payload_len || replacement.size() > UINT16_MAX - (payload_len - old_len))
         return -1;
-    }
     const size_t captured_len = packet->captured_len - old_len + replacement.size();
-    if (captured_len > static_cast<size_t>(packet->capacity_end - packet->data)) {
+    if (captured_len > static_cast<size_t>(packet->capacity_end - packet->data))
         return -1;
-    }
 
     // Preserve bytes beyond both the transport and IPv6 declared boundaries.
     std::memmove(
@@ -94,14 +97,12 @@ int ipv6_packet_replace(
         start + old_len,
         static_cast<size_t>(packet->captured_end - (start + old_len))
     );
-    if (!replacement.empty()) {
+    if (!replacement.empty())
         std::memcpy(start, replacement.data(), replacement.size());
-    }
 
     packet->captured_len = captured_len;
     packet->declared_len = packet->declared_len - old_len + replacement.size();
-    packet->captured_end = packet->data + packet->captured_len;
-    packet->declared_end = packet->data + packet->declared_len;
+    ipv6_packet_update_ends(packet);
     packet->header->ip6_plen = Tins::Endian::host_to_be(
         static_cast<uint16_t>(payload_len - old_len + replacement.size())
     );
@@ -123,10 +124,8 @@ static uint16_t ipv6_upperlayer_checksum(
     );
 
     sum += Tins::Utils::sum_range(data, data + data_len);
-    while (sum >> CHECKSUM_WORD_BITS) {
+    while (sum >> CHECKSUM_WORD_BITS)
         sum = (sum & UINT16_MAX) + (sum >> CHECKSUM_WORD_BITS);
-    }
-
     return Tins::Endian::be_to_host(static_cast<uint16_t>(~sum));
 }
 

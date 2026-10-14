@@ -15,24 +15,31 @@ struct local_dns_source {
     std::string interface_name;
 };
 
-class local_dns_cache {
-public:
+class local_dns_cache
+{
+  public:
     using clock = std::chrono::steady_clock;
 
     local_dns_cache() = default;
     ~local_dns_cache();
-    local_dns_cache(const local_dns_cache&) = delete;
-    local_dns_cache& operator=(const local_dns_cache&) = delete;
+    local_dns_cache(const local_dns_cache &) = delete;
+    local_dns_cache &operator=(const local_dns_cache &) = delete;
 
-    void refresh(clock::time_point now = clock::now());
+    // Called per DNS packet: costs one clock read and compare until a rescan is due.
+    void refresh(clock::time_point now = clock::now())
+    {
+        if (now >= next_refresh_)
+            rescan(now);
+    }
     const local_dns_source *find(uint32_t indev, uint32_t physindev) const;
     const char *path() const
     {
         return path_;
     }
 
-private:
-    void save(const std::string& snapshot);
+  private:
+    void rescan(clock::time_point now);
+    void save(const std::string &snapshot);
     void close_file();
 
     std::map<uint32_t, local_dns_source> entries_;

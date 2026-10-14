@@ -19,7 +19,6 @@ constexpr char PROGRAM_VERSION[] = BRIDGE_IPV6_DNS_SANITIZER_VERSION;
 constexpr uint32_t QUEUE_MAXLEN = 1024U;
 constexpr uint32_t COPY_RANGE = UINT16_MAX;
 constexpr size_t NFQ_MAX_PAYLOAD = UINT16_MAX - NLA_HDRLEN;
-constexpr int POLL_TIMEOUT_MS = 1000;
 constexpr unsigned int DNS_REFRESH_SECONDS = 5U;
 constexpr char DNS_CACHE_TEMPLATE[] = "/tmp/l2dns6rw-dns-XXXXXX";
 constexpr size_t NFQ_NETLINK_HEADROOM = 4096U;

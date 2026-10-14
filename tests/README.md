@@ -20,7 +20,7 @@ The suite covers:
 - automatic DNS snapshots, bridge fallback, refresh/retry timing, interface
   removal/index reuse, last-known DNS fallback, temporary-file permissions/cleanup,
   persistence failure, and allocation failure
-- repeated callbacks without network discovery and with reusable buffers
+- callback-driven discovery, repeated callbacks without rediscovery, and reusable buffers
 - daemon argument, setup, poll, receive, and cleanup paths
 - formatting helpers, address lists, DUIDs, and transaction IDs
 - required UCI queue-number and optional DNS-list validation and procd arguments

@@ -20,8 +20,10 @@ struct ipv6_transport_view {
     bool fragmented;
 };
 
-enum ipv6_transport_result
-parse_ipv6_transport(uint8_t *packet, size_t packet_len,
-                     struct ipv6_transport_view *transport);
+enum ipv6_transport_result parse_ipv6_transport(
+    uint8_t *packet,
+    size_t packet_len,
+    struct ipv6_transport_view *transport
+);
 
 #endif

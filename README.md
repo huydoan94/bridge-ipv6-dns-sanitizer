@@ -52,10 +52,10 @@ DHCPv6 Advertise/Reply packets (`547 -> 546`):
 When no DNS list is configured, the automatic DNS address is the first ULA
 (`fc00::/7`) found on the ingress interface or its bridge master.
 
-Automatic discovery runs at startup and every five seconds in the event loop,
-not in packet callbacks. Each refresh takes one OS interface/address snapshot
-and resolves bridge membership. Packet processing uses only the in-memory
-lookup. When discovery fails or an existing interface temporarily has no ULA,
+Automatic discovery runs at startup and then from the packet callback, at most
+once every five seconds, so the daemon sleeps without timed wakeups until
+NFQUEUE delivers a packet. Each refresh takes one OS interface/address snapshot
+and resolves bridge membership; other packets use only the in-memory lookup. When discovery fails or an existing interface temporarily has no ULA,
 its last successfully cached DNS remains in use and is retried on the next
 refresh. Packets pass unchanged only if neither ingress interface has a cached
 DNS. A newly resolved address replaces the old one. A successful snapshot still

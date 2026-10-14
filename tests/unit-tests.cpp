@@ -736,9 +736,6 @@ void test_logging_formatters()
     EXPECT(std::strcmp(buffer, "error 7") == 0);
     set_error(tiny, sizeof(tiny), "abcdef");
     EXPECT(std::strcmp(tiny, "abcd") == 0);
-    tiny[0] = 'x';
-    set_error(tiny, 0, "ignored");
-    EXPECT(tiny[0] == 'x');
 
     ip6h.ip6_src = address("fd00::1");
     ip6h.ip6_dst = address("ff02::1");
@@ -762,7 +759,8 @@ void test_logging_formatters()
 
 void test_address_lists_and_details()
 {
-    addr_list list;
+    dns_option_stats stats = {};
+    addr_list &list = stats.original;
     char detail[DETAIL_BUFSIZE];
     const in6_addr first = address("fd00::1");
     const in6_addr second = address("fd00::2");
@@ -770,14 +768,15 @@ void test_address_lists_and_details()
 
     addr_list_init(&list);
     addr_list_append_wire_ipv6(&list, addresses.data(), 0);
-    format_ra_log_detail(detail, sizeof(detail), "from=a to=b", 10, 0,
-                         &list, 0, 0, 0, 0, 0);
-    expect_text_contains(detail, "rdnss=[]");
+    format_ra_log_detail(detail, sizeof(detail), "from=a to=b", 10, &stats, 0, 0);
+    expect_text_contains(detail, "router-lifetime=10->0 rdnss=[]");
 
     addr_list_init(&list);
     addr_list_append_wire_ipv6(&list, addresses.data(), addresses.size());
-    format_ra_log_detail(detail, sizeof(detail), "from=a to=b", 10, 0,
-                         &list, 1, 1, 1, 2, 3);
+    stats.options = 1;
+    stats.rewritten = 1;
+    stats.deduplicated = 1;
+    format_ra_log_detail(detail, sizeof(detail), "from=a to=b", 10, &stats, 2, 3);
     expect_text_contains(detail, "rdnss=[fd00::1,fd00::2]");
     expect_text_contains(detail, "rdnss-options=1");
     expect_text_contains(detail, "dnssl-removed=2 pvd-removed=3");
@@ -793,14 +792,12 @@ void test_address_lists_and_details()
     addresses = wire_addresses(many);
     addr_list_append_wire_ipv6(&list, addresses.data(), addresses.size());
     EXPECT(list.truncated);
-    format_ra_log_detail(detail, sizeof(detail), "x", 0, 0,
-                         &list, 1, 0, 0, 0, 0);
+    format_ra_log_detail(detail, sizeof(detail), "x", 0, &stats, 0, 0);
     expect_text_contains(detail, ",...]");
 
     addr_list_init(&list);
     const uint8_t xid[] = { 0x12, 0x34, 0x56 };
-    format_dhcpv6_log_detail(detail, sizeof(detail), "Reply", "from=a to=b",
-                             xid, "", "", &list, 0, 0, 0, 0);
+    format_dhcpv6_log_detail(detail, sizeof(detail), "Reply", "from=a to=b", xid, "", "", &stats, 0);
     expect_text_contains(detail, "type=DHCPv6-Reply");
     expect_text_contains(detail, "xid=0x123456");
     expect_text_contains(detail, "client-id=- client-mac=-");
@@ -868,10 +865,9 @@ void test_duid_formatting()
 
     char small_id[6];
     format_dhcpv6_client_log_fields(llt.data(), llt.size(),
-                                    small_id, sizeof(small_id), nullptr, 0);
-    EXPECT(std::strcmp(small_id, "00...") == 0);
-    format_dhcpv6_client_log_fields(llt.data(), llt.size(), nullptr, 0,
+                                    small_id, sizeof(small_id),
                                     client_mac, sizeof(client_mac));
+    EXPECT(std::strcmp(small_id, "00...") == 0);
     EXPECT(std::strcmp(client_mac, "02:aa:bb:cc:dd:ee") == 0);
 }
 
@@ -979,7 +975,6 @@ void test_transport_parser()
     ipv6_transport_view view = {};
     uint8_t byte = 0x60;
     EXPECT(parse_ipv6_transport(nullptr, 0, &view) == IPV6_TRANSPORT_MALFORMED);
-    EXPECT(parse_ipv6_transport(&byte, 1, nullptr) == IPV6_TRANSPORT_MALFORMED);
     EXPECT(parse_ipv6_transport(&byte,
                                 static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U,
                                 &view) == IPV6_TRANSPORT_MALFORMED);
@@ -1070,11 +1065,31 @@ void test_checksum_policy()
     EXPECT(udp_checksum_state(dhcp.packet.header, udp,
                               dhcp.transport.len, false) == CHECKSUM_INVALID);
 
-    EXPECT(preserve_checksum_state(0U, CHECKSUM_VALID, true) == UINT16_MAX);
-    EXPECT(preserve_checksum_state(0U, CHECKSUM_VALID, false) == 0U);
-    EXPECT(preserve_checksum_state(0x1234U, CHECKSUM_VALID, true) == 0x1234U);
-    EXPECT(preserve_checksum_state(0x1234U, CHECKSUM_INVALID, false) == 0x1235U);
-    EXPECT(preserve_checksum_state(0U, CHECKSUM_INVALID, true) == (UINT16_MAX ^ 1U));
+    EXPECT(preserve_checksum_state(0U, CHECKSUM_VALID) == 0U);
+    EXPECT(preserve_checksum_state(0x1234U, CHECKSUM_VALID) == 0x1234U);
+    EXPECT(preserve_checksum_state(0x1234U, CHECKSUM_NOT_READY) == 0x1234U);
+    EXPECT(preserve_checksum_state(0x1234U, CHECKSUM_INVALID) == 0x1235U);
+    EXPECT(preserve_checksum_state(UINT16_MAX, CHECKSUM_INVALID) == (UINT16_MAX ^ 1U));
+}
+
+sanitize_job fixture_job(packet_fixture& fixture,
+                         const std::vector<in6_addr>& dns_servers,
+                         std::vector<uint8_t>& output,
+                         bool checksum_not_ready,
+                         bool with_log,
+                         char *detail,
+                         char *error)
+{
+    sanitize_job job;
+    job.packet = &fixture.packet;
+    job.transport = &fixture.transport;
+    job.dns_servers = &dns_servers;
+    job.output = &output;
+    job.endpoints = with_log ? "from=a to=b" : nullptr;
+    job.detail = detail;
+    job.error = error;
+    job.checksum_not_ready = checksum_not_ready;
+    return job;
 }
 
 sanitize_result sanitize_ra_fixture(packet_fixture& fixture,
@@ -1088,11 +1103,8 @@ sanitize_result sanitize_ra_fixture(packet_fixture& fixture,
     std::vector<uint8_t> output;
 
     fixture.transport.packet_type = Tins::PDU::ICMPv6;
-    return sanitize_ra(&fixture.packet, &fixture.transport, dns_servers,
-                       checksum_not_ready, with_log ? "from=a to=b" : nullptr,
-                       with_log ? detail : nullptr,
-                       with_log ? DETAIL_BUFSIZE : 0U,
-                       error, ERROR_BUFSIZE, output);
+    const sanitize_job job = fixture_job(fixture, dns_servers, output, checksum_not_ready, with_log, detail, error);
+    return sanitize_ra(&job);
 }
 
 void test_ra_malformed_inputs()
@@ -1103,11 +1115,6 @@ void test_ra_malformed_inputs()
     packet_fixture short_ra(IPPROTO_ICMPV6, std::vector<uint8_t>(sizeof(struct nd_router_advert) - 1U));
     EXPECT(sanitize_ra_fixture(short_ra, local_dns, false, false, detail, error) == SANITIZE_ERROR);
     expect_text_contains(error, "truncated Router Advertisement");
-
-    packet_fixture null_ra = router_advertisement(0, {});
-    null_ra.transport.header = nullptr;
-    error[0] = '\0';
-    EXPECT(sanitize_ra_fixture(null_ra, local_dns, false, false, detail, error) == SANITIZE_ERROR);
 
     packet_fixture truncated_header = router_advertisement(0, { { 1U } });
     error[0] = '\0';
@@ -1261,11 +1268,8 @@ sanitize_result sanitize_dhcp_fixture(packet_fixture& fixture,
     std::vector<uint8_t> output;
 
     fixture.transport.packet_type = Tins::PDU::DHCPv6;
-    return sanitize_dhcpv6(&fixture.packet, &fixture.transport, dns_servers,
-                           checksum_not_ready, with_log ? "from=a to=b" : nullptr,
-                           with_log ? detail : nullptr,
-                           with_log ? DETAIL_BUFSIZE : 0U,
-                           error, ERROR_BUFSIZE, output);
+    const sanitize_job job = fixture_job(fixture, dns_servers, output, checksum_not_ready, with_log, detail, error);
+    return sanitize_dhcpv6(&job);
 }
 
 void test_dhcp_envelope_validation()
@@ -1274,10 +1278,6 @@ void test_dhcp_envelope_validation()
     char detail[DETAIL_BUFSIZE] = "";
     char error[ERROR_BUFSIZE] = "";
     packet_fixture fixture = dhcpv6_packet(Tins::DHCPv6::REPLY, {});
-    fixture.transport.header = nullptr;
-    EXPECT(sanitize_dhcp_fixture(fixture, local_dns, false, false,
-                                 detail, error) == SANITIZE_UNCHANGED);
-    fixture = dhcpv6_packet(Tins::DHCPv6::REPLY, {});
     fixture.transport.len = sizeof(struct udphdr) - 1U;
     EXPECT(sanitize_dhcp_fixture(fixture, local_dns, false, false,
                                  detail, error) == SANITIZE_UNCHANGED);
@@ -1415,11 +1415,6 @@ void test_dhcp_authentication_and_checksum()
 
 int call_packet_cb(nfgenmsg *message, app_ctx *ctx)
 {
-    // Simulate cache maintenance by the event loop, not by the callback.
-    static unsigned int tick = 0;
-    if (ctx->dns_servers.empty())
-        ctx->dns_cache.refresh(local_dns_cache::clock::time_point{} +
-                               std::chrono::seconds(++tick * 5U));
     return packet_cb(reinterpret_cast<struct nfq_q_handle *>(1), message,
                      reinterpret_cast<struct nfq_data *>(1), ctx);
 }
@@ -1800,6 +1795,35 @@ void test_callback_cache_and_buffer_reuse()
     EXPECT(malformed_dhcp.bytes == original_dhcp);
 }
 
+void test_callback_refreshes_dns_cache()
+{
+    reset_stubs();
+    app_ctx ctx = {};
+    nfgenmsg message = bridge_message();
+    auto input = router_advertisement(10, { rdnss_option({ address("fd00::1") }) });
+    const auto original = input.bytes;
+    prepare_callback_payload(input.bytes);
+    const auto expected = router_advertisement(0,
+        { rdnss_option({ address("fd00::53") }) });
+
+    // The first DNS-bearing packet performs discovery; later ones within the
+    // refresh interval reuse the snapshot.
+    for (unsigned int i = 0; i < 10U; ++i) {
+        std::copy(original.begin(), original.end(), input.bytes.begin());
+        nfq_stub.verdicts.clear();
+        EXPECT(call_packet_cb(&message, &ctx) == 0);
+        EXPECT(nfq_stub.verdicts.back().data == expected.bytes);
+    }
+    EXPECT(discovery_calls == 1U && discovery_frees == 1U);
+
+    reset_stubs();
+    app_ctx configured = {};
+    configured.dns_servers = { address("fd00::53") };
+    std::copy(original.begin(), original.end(), input.bytes.begin());
+    EXPECT(call_packet_cb(&message, &configured) == 0);
+    EXPECT(discovery_calls == 0U);
+}
+
 void test_callback_configured_dns_servers()
 {
     app_ctx ctx = {};
@@ -1963,8 +1987,6 @@ std::string capture_daemon_stdout(
 void test_queue_number_parsing()
 {
     uint16_t queue_number = 0;
-    in6_addr dns_server = {};
-    const in6_addr expected_dns = address("fd00::53");
 
     EXPECT(parse_queue_number("0", &queue_number));
     EXPECT(queue_number == 0U);
@@ -1974,17 +1996,10 @@ void test_queue_number_parsing()
     EXPECT(queue_number == 1U);
     EXPECT(parse_queue_number(" 2", &queue_number));
     EXPECT(queue_number == 2U);
-    EXPECT(!parse_queue_number(nullptr, &queue_number));
     EXPECT(!parse_queue_number("", &queue_number));
     EXPECT(!parse_queue_number("-1", &queue_number));
     EXPECT(!parse_queue_number("1x", &queue_number));
     EXPECT(!parse_queue_number("65536", &queue_number));
-    EXPECT(!parse_queue_number("1", nullptr));
-    EXPECT(parse_dns_server("fd00::53", &dns_server));
-    EXPECT(std::memcmp(&dns_server, &expected_dns, sizeof(dns_server)) == 0);
-    EXPECT(!parse_dns_server("192.0.2.53", &dns_server));
-    EXPECT(!parse_dns_server("invalid", &dns_server));
-    EXPECT(!parse_dns_server(nullptr, &dns_server));
 }
 
 void test_startup_logging()
@@ -2043,6 +2058,7 @@ void test_signal_and_cli_paths()
     EXPECT(run_daemon({ "daemon", "-h" }) == EXIT_SUCCESS);
     EXPECT(run_daemon({ "daemon" }) == EXIT_FAILURE);
     EXPECT(run_daemon({ "daemon", "-q", "100", "-d", "invalid" }) == EXIT_FAILURE);
+    EXPECT(run_daemon({ "daemon", "-q", "100", "-d", "192.0.2.53" }) == EXIT_FAILURE);
     EXPECT(run_daemon(too_many_dns_servers) == EXIT_FAILURE);
     EXPECT(run_daemon({ "daemon", "-q" }) == EXIT_FAILURE);
     EXPECT(run_daemon({ "daemon", "-q", "invalid" }) == EXIT_FAILURE);
@@ -2099,11 +2115,9 @@ void run_loop_case(const poll_step& poll_value,
 
 void test_daemon_poll_and_receive_paths()
 {
-    run_loop_case({ 0, 0, 0, true }, {}, 0, EXIT_SUCCESS);
     run_loop_case({ -1, 0, EINTR, true }, {}, 0, EXIT_SUCCESS);
     run_loop_case({ -1, 0, EIO, true }, {}, 0, EXIT_FAILURE);
     run_loop_case({ 1, POLLERR, 0, true }, {}, 0, EXIT_FAILURE);
-    run_loop_case({ 1, 0, 0, true }, {}, 0, EXIT_SUCCESS);
     run_loop_case({ 1, POLLIN, 0, true }, { { 8, 0 } }, 0, EXIT_SUCCESS);
     run_loop_case({ 1, POLLIN, 0, true }, { { 8, 0 } }, -1, EXIT_FAILURE);
     run_loop_case({ 1, POLLIN, 0, true }, { { -1, EINTR } }, 0, EXIT_SUCCESS);
@@ -2166,6 +2180,7 @@ int main(int argc, char **argv)
     run_test("packet basics", test_packet_basics);
     run_test("DNS cache lifecycle and retries", test_dns_cache);
     run_test("callback cache and buffer reuse", test_callback_cache_and_buffer_reuse);
+    run_test("callback refreshes DNS cache", test_callback_refreshes_dns_cache);
     run_test("IPv6 packet parsing", test_ipv6_packet_parsing);
     run_test("IPv6 packet replacement", test_ipv6_packet_replacement);
     run_test("logging formatters", test_logging_formatters);
