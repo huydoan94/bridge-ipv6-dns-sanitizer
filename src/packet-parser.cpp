@@ -2,6 +2,7 @@
 #include "constants.h"
 
 #include <limits>
+#include <new>
 
 #include <tins/icmpv6.h>
 #include <tins/ipv6.h>
@@ -93,6 +94,9 @@ enum ipv6_transport_result parse_ipv6_transport(
         transport->header = packet + transport_offset;
         transport->len = packet_len - transport_offset;
         return IPV6_TRANSPORT_FOUND;
+    } catch (const std::bad_alloc &) {
+        // Out of memory is not malformed input: the caller drops the packet.
+        throw;
     } catch (...) {
         /* Parser failures are fail-open at the caller. */
         return IPV6_TRANSPORT_MALFORMED;

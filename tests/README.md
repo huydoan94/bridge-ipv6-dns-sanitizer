@@ -15,7 +15,7 @@ The suite covers:
 - DHCPv6 envelope and option validation, DNS rewriting/deduplication, Domain
   List removal, Authentication policy, checksums, logging, and compaction
   failures
-- NFQUEUE callback accept/drop/change/fail-open decisions
+- NFQUEUE callback accept/drop/change decisions, including fail-closed drops
 - configured multi-server DNS rewriting with packet expansion
 - automatic DNS snapshots, bridge fallback, refresh/retry timing, interface
   removal/index reuse, last-known DNS fallback, temporary-file permissions/cleanup,

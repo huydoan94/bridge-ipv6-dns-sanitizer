@@ -39,8 +39,9 @@ enum ipv6_packet_result parse_nfqueue_ipv6_payload(
         return IPV6_PACKET_PASSTHROUGH;
 
     const uint16_t ipv6_payload_len = read_be16(payload + offsetof(struct ip6_hdr, ip6_plen));
+    // A zero payload length means a Jumbo Payload option carries the real one.
     if (ipv6_payload_len == 0)
-        return IPV6_PACKET_PASSTHROUGH;
+        return IPV6_PACKET_JUMBOGRAM;
 
     const size_t ipv6_packet_len = sizeof(struct ip6_hdr) + ipv6_payload_len;
     if (ipv6_packet_len > payload_len)

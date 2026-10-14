@@ -11,6 +11,7 @@
 enum ipv6_packet_result {
     IPV6_PACKET_OK = 0,
     IPV6_PACKET_PASSTHROUGH,
+    IPV6_PACKET_JUMBOGRAM,
     IPV6_PACKET_TRUNCATED,
 };
 

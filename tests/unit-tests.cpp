@@ -318,7 +318,7 @@ struct nfq_stub_state {
     bool create_queue_succeeds;
     uint16_t queue_number;
     std::string configured_dns_log;
-    int queue_flags_result;
+    int queue_flags_calls;
     int mode_result;
     int maxlen_result;
     int handle_packet_result;
@@ -381,7 +381,7 @@ void reset_stubs()
     nfq_stub.create_queue_succeeds = true;
     nfq_stub.queue_number = 0;
     nfq_stub.configured_dns_log.clear();
-    nfq_stub.queue_flags_result = 0;
+    nfq_stub.queue_flags_calls = 0;
     nfq_stub.mode_result = 0;
     nfq_stub.maxlen_result = 0;
     nfq_stub.handle_packet_result = 0;
@@ -603,7 +603,8 @@ int nfq_set_queue_flags(struct nfq_q_handle *handle, uint32_t mask, uint32_t fla
     (void)handle;
     (void)mask;
     (void)flags;
-    return nfq_stub.queue_flags_result;
+    ++nfq_stub.queue_flags_calls;
+    return 0;
 }
 
 int nfq_set_verdict(struct nfq_q_handle *handle, uint32_t id, uint32_t verdict,
@@ -691,7 +692,7 @@ void test_ipv6_packet_parsing()
     EXPECT(parse_nfqueue_ipv6_payload(fixture.bytes.data(), fixture.bytes.size(), &view) == IPV6_PACKET_PASSTHROUGH);
     fixture.bytes[0] = 0x60;
     fixture.packet.header->ip6_plen = 0;
-    EXPECT(parse_nfqueue_ipv6_payload(fixture.bytes.data(), fixture.bytes.size(), &view) == IPV6_PACKET_PASSTHROUGH);
+    EXPECT(parse_nfqueue_ipv6_payload(fixture.bytes.data(), fixture.bytes.size(), &view) == IPV6_PACKET_JUMBOGRAM);
     fixture.packet.header->ip6_plen = htons(100U);
     EXPECT(parse_nfqueue_ipv6_payload(fixture.bytes.data(), fixture.bytes.size(), &view) == IPV6_PACKET_TRUNCATED);
     fixture.packet.header->ip6_plen = htons(8U);
@@ -1226,8 +1227,8 @@ void test_ra_send_and_compaction_failure()
     failure.packet.header->ip6_plen = 0;
     error[0] = '\0';
     EXPECT(sanitize_ra_fixture(failure, local_dns, false, false,
-                               detail, error) == SANITIZE_ERROR);
-    expect_text_contains(error, "failed to replace RA options");
+                               detail, error) == SANITIZE_DROP);
+    expect_text_contains(error, "rewritten RA does not fit in an IPv6 packet; DROP");
 }
 
 void test_dhcp_option_parser()
@@ -1409,8 +1410,8 @@ void test_dhcp_authentication_and_checksum()
         { dhcp_option(Tins::DHCPv6::DOMAIN_LIST, { 1U }) });
     failure.packet.header->ip6_plen = 0;
     EXPECT(sanitize_dhcp_fixture(failure, local_dns, false, false,
-                                 detail, error) == SANITIZE_ERROR);
-    expect_text_contains(error, "failed to replace DHCPv6 options");
+                                 detail, error) == SANITIZE_DROP);
+    expect_text_contains(error, "rewritten DHCPv6 does not fit in an IPv6 packet; DROP");
 }
 
 int call_packet_cb(nfgenmsg *message, app_ctx *ctx)
@@ -1497,7 +1498,14 @@ void test_callback_transport_policy()
     resolver_result = -1;
     app_ctx never_cached = {};
     EXPECT(call_packet_cb(&message, &never_cached) == 0);
-    expect_last_verdict(NF_ACCEPT, 0U);
+    expect_last_verdict(NF_DROP, 0U);
+
+    reset_stubs();
+    packet_fixture jumbogram = router_advertisement(10U, {});
+    jumbogram.packet.header->ip6_plen = 0;
+    prepare_callback_payload(jumbogram.bytes);
+    EXPECT(call_packet_cb(&message, &ctx) == 0);
+    expect_last_verdict(NF_DROP, 0U);
 }
 
 void test_callback_sanitizer_results()
@@ -1593,7 +1601,7 @@ void test_verdict_memory_boundaries()
     prepare_callback_payload(packet.bytes);
     EXPECT(call_packet_cb(&message, &ctx) == 0);
     EXPECT(nfq_stub.verdicts.size() == 1U);
-    expect_last_verdict(NF_ACCEPT, 0U);
+    expect_last_verdict(NF_DROP, 0U);
 }
 
 void test_callback_allocation_failures()
@@ -1619,7 +1627,7 @@ void test_callback_allocation_failures()
         EXPECT(nfq_stub.verdicts.size() == 1U);
         if (allocation_failed) {
             ++failures;
-            expect_last_verdict(NF_ACCEPT, 0U);
+            expect_last_verdict(NF_DROP, 0U);
         } else {
             EXPECT(nfq_stub.verdicts.back().data_len != 0U);
             completed = true;
@@ -2082,10 +2090,11 @@ void test_daemon_setup_failures()
     EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);
     EXPECT(nfq_stub.close_calls == 1);
 
+    // The queue fails closed: NFQA_CFG_F_FAIL_OPEN is never requested.
     reset_stubs();
-    nfq_stub.queue_flags_result = -1;
-    EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);
-    EXPECT(nfq_stub.destroy_calls == 1 && nfq_stub.close_calls == 1);
+    running = 0;
+    EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_SUCCESS);
+    EXPECT(nfq_stub.queue_flags_calls == 0);
     reset_stubs();
     nfq_stub.mode_result = -1;
     EXPECT(run_daemon({ "daemon", "-q", "100" }) == EXIT_FAILURE);

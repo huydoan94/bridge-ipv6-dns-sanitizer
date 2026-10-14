@@ -323,8 +323,8 @@ static enum sanitize_result sanitize_ra(const struct sanitize_job *job)
         job->checksum_not_ready
     );
     if (ipv6_packet_replace(packet, options, options_len, output) < 0) {
-        set_error(job->error, ERROR_BUFSIZE, "failed to replace RA options");
-        return SANITIZE_ERROR;
+        set_error(job->error, ERROR_BUFSIZE, "rewritten RA does not fit in an IPv6 packet; DROP");
+        return SANITIZE_DROP;
     }
 
     ra->nd_ra_router_lifetime = htons(RA_NEUTRAL_ROUTER_LIFETIME);
@@ -458,8 +458,8 @@ static enum sanitize_result sanitize_dhcpv6(const struct sanitize_job *job)
         job->checksum_not_ready
     );
     if (ipv6_packet_replace(packet, options, options_len, output) < 0) {
-        set_error(job->error, ERROR_BUFSIZE, "failed to replace DHCPv6 options");
-        return SANITIZE_ERROR;
+        set_error(job->error, ERROR_BUFSIZE, "rewritten DHCPv6 does not fit in an IPv6 packet; DROP");
+        return SANITIZE_DROP;
     }
 
     // Successful IPv6 replacement already guarantees this fits in 16 bits.
@@ -549,6 +549,9 @@ try {
     switch (parse_nfqueue_ipv6_payload(payload, static_cast<size_t>(payload_len), &ipv6)) {
     case IPV6_PACKET_OK:
         break;
+    case IPV6_PACKET_JUMBOGRAM:
+        log_error("id=%u: IPv6 jumbogram is not supported; DROP", id);
+        return drop_packet(qh, id);
     case IPV6_PACKET_TRUNCATED:
         log_error("id=%u: IPv6 declared length exceeds captured payload; DROP", id);
         return drop_packet(qh, id);
@@ -573,9 +576,8 @@ try {
         dns_cache->refresh();
         const local_dns_source *source = dns_cache->find(nfq_get_indev(nfa), nfq_get_physindev(nfa));
         if (source == nullptr) {
-            if (ctx->verbose)
-                log_info("id=%u: no cached ingress ULA; ACCEPT unchanged", id);
-            return accept_unchanged(qh, id);
+            log_error("id=%u: no cached ingress ULA to advertise; DROP", id);
+            return drop_packet(qh, id);
         }
         dns_servers = &source->servers;
         dns_source_log = source->description.c_str();
@@ -624,8 +626,8 @@ try {
     const int verdict = verdict_with_modified_ipv6(qh, id, &ipv6, ctx->packet_buffer);
     if (verdict >= 0)
         return verdict;
-    log_error("id=%u: could not send modified IPv6 verdict (%s); ACCEPT unchanged", id, strerror(errno));
-    return accept_unchanged(qh, id);
+    log_error("id=%u: could not send modified IPv6 verdict (%s); DROP", id, strerror(errno));
+    return drop_packet(qh, id);
 } catch (const std::bad_alloc &) {
     const struct nfqnl_msg_packet_hdr *ph = nfq_get_msg_packet_hdr(nfa);
 
@@ -634,8 +636,8 @@ try {
         return -1;
     }
     const uint32_t id = ntohl(ph->packet_id);
-    log_error("id=%u: out of memory while processing packet; ACCEPT unchanged", id);
-    return accept_unchanged(qh, id);
+    log_error("id=%u: out of memory while processing packet; DROP", id);
+    return drop_packet(qh, id);
 }
 
 static bool parse_queue_number(const char *text, uint16_t *queue_number)
@@ -783,19 +785,12 @@ int main(int argc, char **argv)
         goto out_nfq;
     }
 
-    /*
-     * nft's `queue ... bypass` only handles the no-listener case. A full
-     * kernel NFQUEUE is dropped by default, so explicitly enable the kernel
-     * fail-open flag as well.
-     */
-    if (nfq_set_queue_flags(qh, NFQA_CFG_F_FAIL_OPEN, NFQA_CFG_F_FAIL_OPEN) < 0) {
-        log_error("nfq_set_queue_flags(FAIL_OPEN) failed: %s", strerror(errno));
-        goto out_queue;
-    }
     if (nfq_set_mode(qh, NFQNL_COPY_PACKET, COPY_RANGE) < 0) {
         log_error("nfq_set_mode() failed");
         goto out_queue;
     }
+    // NFQA_CFG_F_FAIL_OPEN stays off: when the queue is full the kernel drops
+    // new packets, so remote DNS settings never pass unsanitized.
     if (nfq_set_queue_maxlen(qh, QUEUE_MAXLEN) < 0)
         log_error("nfq_set_queue_maxlen(%u) failed", QUEUE_MAXLEN);
 

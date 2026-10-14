@@ -57,8 +57,7 @@ once every five seconds, so the daemon sleeps without timed wakeups until
 NFQUEUE delivers a packet. Each refresh takes one OS interface/address snapshot
 and resolves bridge membership; other packets use only the in-memory lookup. When discovery fails or an existing interface temporarily has no ULA,
 its last successfully cached DNS remains in use and is retried on the next
-refresh. Packets pass unchanged only if neither ingress interface has a cached
-DNS. A newly resolved address replaces the old one. A successful snapshot still
+refresh. Packets are dropped if neither ingress interface has a cached DNS. A newly resolved address replaces the old one. A successful snapshot still
 removes deleted interfaces and prevents reuse of cached DNS when an interface
 index belongs to a different interface name.
 
@@ -72,8 +71,8 @@ disable the in-memory cache. Configured DNS lists bypass discovery entirely.
 ## Packet handling
 
 - IPv6 extension-header traversal and transport discovery are delegated to libtins.
-- Routing, AH, ESP, Mobility, jumbograms, and other unsupported layouts pass unchanged.
-- Fragmented target RA/DHCPv6 packets are dropped.
+- Routing, AH, ESP, Mobility, and other unsupported layouts pass unchanged.
+- Jumbograms and fragmented target RA/DHCPv6 packets are dropped.
 - If the IPv6 declared length exceeds the bytes delivered by NFQUEUE, the
   packet is dropped.
 - If IPv6 or UDP declares a shorter region than NFQUEUE captured, only the
@@ -83,6 +82,8 @@ disable the in-memory cache. Configured DNS lists bypass discovery entirely.
   zeroed, and oversized verdict payloads are rejected.
 - Checksums are calculated only after validation confirms that a packet needs
   editing. Unchanged, malformed, and protected packets avoid that work.
+- A rewrite that would not fit in an IPv6 packet or an NFQUEUE verdict, a
+  rejected verdict, and an allocation failure drop the packet.
 - A valid incoming checksum remains valid after sanitization.
 - An invalid incoming checksum remains deliberately invalid after sanitization.
 - NFQUEUE checksum-not-ready packets receive a correct checksum after editing.
@@ -90,6 +91,11 @@ disable the in-memory cache. Configured DNS lists bypass discovery entirely.
   untouched. If a protected packet would require sanitization, it is dropped;
   if no change is needed, it passes unchanged.
 - Other malformed or unsupported packets pass unchanged.
+
+The queue fails closed: the rules have no `bypass`, so the kernel drops queued
+packets while the daemon is not running (stopped, crashed or restarting), and
+the daemon leaves `NFQA_CFG_F_FAIL_OPEN` off, so packets beyond a full queue are
+dropped too. Remote DNS settings therefore never pass unsanitized.
 
 ## Build
 
@@ -165,10 +171,10 @@ table bridge bridge_ipv6_dns_sanitizer {
         type filter hook prerouting priority filter; policy accept;
 
         meta iifkind "vxlan" icmpv6 type nd-router-advert \
-            counter queue num 100 bypass
+            counter queue num 100
 
         meta iifkind "vxlan" udp sport 547 udp dport 546 \
-            counter queue num 100 bypass
+            counter queue num 100
     }
 }
 ```
