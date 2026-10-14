@@ -70,39 +70,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libnetfilter-queue-dev libnfnetlink-dev
-
-      # The tests link OpenWrt's libtins package: whatever version and patches
-      # its recipe in the packages feed has on the release branch the build
-      # uses. The runner has no OpenWrt tree, so the native copy is built from
-      # that recipe's source and patches.
-      - name: Checkout OpenWrt's libtins recipe
-        uses: actions/checkout@v4
-        with:
-          repository: openwrt/packages
-          ref: ${{ env.OPENWRT_REF }}
-          path: openwrt-packages
-          fetch-depth: 1
-          sparse-checkout: libs/libtins
-
-      - name: Build native libtins from the OpenWrt recipe
-        run: |
-          set -euo pipefail
-          recipe=openwrt-packages/libs/libtins
-          version=$(sed -n 's/^PKG_VERSION:=//p' "$recipe/Makefile")
-          ref=$(sed -n 's/^PKG_SOURCE_VERSION:=//p' "$recipe/Makefile" | sed "s/\$(PKG_VERSION)/$version/")
-          url=$(sed -n 's/^PKG_SOURCE_URL:=//p' "$recipe/Makefile")
-          echo "OpenWrt libtins $version: $url at $ref"
-          git clone --depth 1 --branch "$ref" "$url" "$RUNNER_TEMP/libtins"
-          for patch in "$recipe"/patches/*.patch; do
-            [ -e "$patch" ] || continue
-            echo "applying $(basename "$patch")"
-            patch -d "$RUNNER_TEMP/libtins" -p1 < "$patch"
-          done
-          LIBTINS_SOURCE_DIR="$RUNNER_TEMP/libtins" sh tests/build-host-libtins.sh
+        run: sudo apt-get update && sudo apt-get install -y build-essential clang libbpf-dev linux-libc-dev
 
       - name: Run unit and init-script tests
         run: VERBOSE=1 sh tools/host-test.sh
+
+      # The runner may use sudo, so the program runs in the runner's kernel.
+      - name: Run the BPF program's packet tests
+        run: sh tests/bpf/run.sh
 
   generate-matrix:
     name: Discover OpenWrt architectures
@@ -151,7 +126,7 @@ jobs:
           path: ${{ env.PACKAGE_NAME }}
           fetch-depth: 0
 
-      # libtins and libnetfilter-queue come from the SDK's default feeds.
+      # libbpf comes from the SDK's default feeds; bpf.mk compiles the program.
       - name: Build l2dns6rw for ${{ matrix.arch }}
         uses: openwrt/gh-action-sdk@main
         env:

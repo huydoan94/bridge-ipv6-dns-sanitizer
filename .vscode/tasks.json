@@ -3,7 +3,8 @@
     // SDK locations default to siblings of this repository (../openwrt-sdk-x86,
     // ../openwrt-sdk-filogic); set OPENWRT_SDK_X86 or OPENWRT_SDK_FILOGIC to
     // override. Each SDK's package/l2dns6rw must link to this repository. The
-    // host tests use the host's libnetfilter-queue headers and a native libtins.
+    // host tests cover the daemon's logic; the BPF program's packet tests run
+    // in a kernel, so the VM task runs them on the test VM it asks for.
     "version": "2.0.0",
     "tasks": [
         {
@@ -18,6 +19,15 @@
                 "isDefault": true
             },
             "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Test BPF program (VM)",
+            "type": "shell",
+            "command": "sh tests/bpf/run.sh ${input:vm}",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
         },
         {
             "label": "Generate compile_commands.json (IntelliSense)",
@@ -48,6 +58,14 @@
                 "cwd": "${workspaceFolder}"
             },
             "problemMatcher": "$gcc"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "vm",
+            "type": "promptString",
+            "description": "Test VM (user@host)",
+            "default": "root@192.168.56.2"
         }
     ]
 }
