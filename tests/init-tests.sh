@@ -95,6 +95,13 @@ expect_contains()
 	esac
 }
 
+# A matching rule is reported once at info level, never as a warning.
+expect_rule_found()
+{
+	[ "$LOG_MESSAGES" = " -s -t l2dns6rw -p daemon.info nftables rule found for NFQUEUE 321" ] || \
+		fail "$1"
+}
+
 reset_test_state()
 {
 	TEST_QUEUE_NUMBER=
@@ -137,10 +144,10 @@ TEST_RULESET='table bridge test {
 		queue num 321; bypass
 	}
 }'
-start_service
+start_service || fail "start_service returned an error"
 [ "$PROCD_COMMAND" = "$PROG -q 321 -d fd00::53 -d 2001:db8::53 -v" ] || \
 	fail "configured queue and DNS servers were not passed to the daemon"
-[ -z "$LOG_MESSAGES" ] || fail "matching nftables rule produced a warning"
+expect_rule_found "matching nftables rule produced a warning"
 [ "$PROCD_RESPAWN" = "3600 5 5" ] || fail "respawn defaults changed"
 
 reset_test_state
@@ -160,8 +167,8 @@ TEST_RULESET='table bridge test {
 		queue num 320-322 fanout,bypass
 	}
 }'
-start_service
-[ -z "$LOG_MESSAGES" ] || fail "matching nftables queue range produced a warning"
+start_service || fail "start_service returned an error"
+expect_rule_found "matching nftables queue range produced a warning"
 
 reset_test_state
 TEST_QUEUE_NUMBER=321
@@ -170,8 +177,8 @@ TEST_RULESET='table inet fw4 {
 		icmpv6 type 134 queue flags bypass to 321
 	}
 }'
-start_service
-[ -z "$LOG_MESSAGES" ] || fail "modern nftables queue syntax produced a warning"
+start_service || fail "start_service returned an error"
+expect_rule_found "modern nftables queue syntax produced a warning"
 
 reset_test_state
 TEST_QUEUE_NUMBER=321
@@ -180,7 +187,7 @@ TEST_RULESET='table bridge test {
 		queue num 100 bypass
 	}
 }'
-start_service
+start_service || fail "start_service returned an error"
 [ "$PROCD_OPENED" -eq 1 ] || fail "missing nftables rule prevented startup"
 expect_contains "$LOG_MESSAGES" "no nftables rule queues packets to NFQUEUE 321; continuing" \
 	"missing nftables rule did not produce the expected warning"
@@ -188,7 +195,7 @@ expect_contains "$LOG_MESSAGES" "no nftables rule queues packets to NFQUEUE 321;
 reset_test_state
 TEST_QUEUE_NUMBER=321
 TEST_NFT_STATUS=1
-start_service
+start_service || fail "start_service returned an error"
 [ "$PROCD_OPENED" -eq 1 ] || fail "nftables inspection failure prevented startup"
 expect_contains "$LOG_MESSAGES" "could not inspect nftables rules for NFQUEUE 321; continuing" \
 	"nftables inspection failure did not produce the expected warning"
