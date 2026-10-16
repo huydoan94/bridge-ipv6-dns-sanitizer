@@ -101,6 +101,46 @@ To detach everything:
 
 Removing the package also detaches it.
 
+## Performance
+
+Measured on OpenWrt VMs (4 vCPUs on an i7-9750H host), with frames sent
+from a veth port through a test bridge to a capturing veth port. Each
+sanitizer is compared with the same VM without one, since the two VMs run
+different OpenWrt versions: the NFQUEUE daemon of 1.6.12 on a 32-bit x86 VM
+(25.12.5, kernel 6.12), and the eBPF program of 1.6.13 on an x86-64 VM
+(snapshot, kernel 6.18, BPF JIT).
+
+Transit time, median (p99):
+
+| Packet | 32-bit, none | 32-bit, NFQUEUE | x86-64, none | x86-64, eBPF |
+| --- | --- | --- | --- | --- |
+| RA, rewritten | 6–9 µs | 317–352 µs (870–909) | 3.2–3.3 µs | 3.7–3.8 µs (13–28) |
+| DHCPv6 Reply, rewritten | 4 µs | 333–345 µs (645–1284) | 2.2 µs | 2.5 µs (6–20) |
+| Other UDP | 6 µs | 6–8 µs | 3.2–3.4 µs | 3.3 µs |
+
+The NFQUEUE round trip through a userspace daemon added about 330 µs to each
+RA or DHCPv6 reply; the eBPF program adds about 0.3–0.5 µs.
+
+Packets per second when flooding, each run against the same round without a
+sanitizer:
+
+| Flood | NFQUEUE, 32-bit | eBPF, x86-64 |
+| --- | --- | --- |
+| RAs | 34–36k of 121–124k (−71 to −72%) | 121–141k of 165–175k (−20 to −26%) |
+| Other UDP | 105–111k of 122–123k (−10 to −14%) | 170–180k of 185–191k (−3 to −11%) |
+
+The program alone (`BPF_PROG_TEST_RUN`, x86-64, JIT) takes 0.40 µs to rewrite
+an RA, 0.31 µs for a DHCPv6 Reply and 0.035–0.05 µs to pass a packet that is
+not a target. The daemon uses about 1.4 MiB of memory, against 2.6 MiB for
+the NFQUEUE daemon, which also needed libtins and libstdc++ (about 2.1 MiB).
+
+Limits: the NFQUEUE version was not measured on the x86-64 VM; most of its
+cost is the trip to userspace, which a faster CPU shortens only in part. On
+a 32-bit x86 VM the program is interpreted instead of JIT-compiled (about 65
+times slower), so measure there only for correctness. Each drop reports an
+event, which cost about 110 µs in these VMs; drops are rare in normal
+traffic.
+
 ## Build
 
 The package builds the program with OpenWrt's BPF toolchain (`bpf.mk`) and
@@ -121,7 +161,7 @@ dependencies recursively instead.
 
 - `sh tools/host-test.sh`: the daemon's logic (option parsing, automatic DNS
   selection, log lines) and the init script, with the host compiler.
-- `sh tests/bpf/run.sh [HOST]`: 51 packet cases run through the program in a
+- `sh tests/bpf/run.sh [HOST]`: 55 packet cases run through the program in a
   kernel with `BPF_PROG_TEST_RUN`, natively with sudo or on a test VM.
 - `sh tools/vm-test/run.sh [HOST]`: the installed package on an OpenWrt VM,
   through a real bridge: rewrites, restarts, device recreation, automatic
