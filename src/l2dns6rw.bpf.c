@@ -131,7 +131,7 @@ struct walk_state {
     __u32 is_ra;
     __u32 dns_options;
     __u32 dns_addresses;
-    __u32 removed; /* DNSSL, PvD or Domain List options dropped */
+    __u32 removed; /* DNSSL, PvD, Domain List and bad-length DNS options dropped */
     __u32 changed;
     __u32 protected; /* SEND signature or DHCPv6 Authentication present */
     __u32 malformed;
@@ -165,17 +165,7 @@ static __always_inline int finish(
     struct l2dns6rw_settings *current = bpf_map_lookup_elem(&settings, &key);
     struct l2dns6rw_event *event;
 
-    switch (verdict) {
-    case L2DNS6RW_VERDICT_CHANGED:
-        count(L2DNS6RW_COUNTER_CHANGED);
-        break;
-    case L2DNS6RW_VERDICT_DROPPED:
-        count(L2DNS6RW_COUNTER_DROPPED);
-        break;
-    default:
-        count(L2DNS6RW_COUNTER_MALFORMED);
-        break;
-    }
+    count(verdict == L2DNS6RW_VERDICT_CHANGED ? L2DNS6RW_COUNTER_CHANGED : L2DNS6RW_COUNTER_DROPPED);
     if (verdict != L2DNS6RW_VERDICT_CHANGED || (current && current->verbose)) {
         event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
         if (event) {
@@ -194,7 +184,7 @@ static __always_inline int finish(
             bpf_ringbuf_submit(event, 0);
         }
     }
-    return verdict == L2DNS6RW_VERDICT_DROPPED ? TCX_DROP : TCX_PASS;
+    return verdict == L2DNS6RW_VERDICT_CHANGED ? TCX_PASS : TCX_DROP;
 }
 
 static __always_inline __u32 fold(__u64 sum)
@@ -328,8 +318,12 @@ __noinline int walk_option(struct walk_state *state)
         case ND_OPT_RDNSS: {
             __u32 address_bytes = option_len - RDNSS_FIXED_LEN;
 
-            if (address_bytes == 0 || address_bytes % 16 != 0)
-                goto malformed;
+            /* Clients ignore an RDNSS of a bad length but keep the rest: remove it. */
+            if (address_bytes == 0 || address_bytes % 16 != 0) {
+                state->changed = 1;
+                state->removed++;
+                goto next;
+            }
             state->dns_addresses += address_bytes / 16;
             if (++state->dns_options > 1) {
                 state->changed = 1;
@@ -367,8 +361,12 @@ __noinline int walk_option(struct walk_state *state)
         case DHCPV6_OPT_DNS_SERVERS: {
             __u32 address_bytes = option_len - DHCPV6_OPTION_HEADER_LEN;
 
-            if (address_bytes == 0 || address_bytes % 16 != 0)
-                goto malformed;
+            /* Clients ignore a DNS option of a bad length but keep the rest: remove it. */
+            if (address_bytes == 0 || address_bytes % 16 != 0) {
+                state->changed = 1;
+                state->removed++;
+                goto next;
+            }
             state->dns_addresses += address_bytes / 16;
             if (++state->dns_options > 1) {
                 state->changed = 1;
@@ -412,8 +410,18 @@ over_limit:
 #define L4_PASS -1
 #define L4_UNRESOLVED -2 /* more extension headers than walked: could hide a target */
 
-/* Walks extension headers; returns the L4 protocol and sets *offset, or L4_PASS or L4_UNRESOLVED. */
-static __always_inline int find_l4(struct __sk_buff *skb, __u8 next_header, __u32 *offset, int *first_fragment)
+/* What the extension headers before the L4 header said. */
+struct headers {
+    int first_fragment; /* a fragment with more to follow: the message is incomplete */
+    int routed;         /* a routing header with segments left: not for this hop */
+    int authenticated;  /* an AH header: a rewrite would break it */
+};
+
+/*
+ * Walks extension headers; returns the L4 protocol and sets *offset, or
+ * L4_PASS (no L4 header to see: a later fragment, ESP) or L4_UNRESOLVED.
+ */
+static __always_inline int find_l4(struct __sk_buff *skb, __u8 next_header, __u32 *offset, struct headers *headers)
 {
     for (int i = 0; i < MAX_EXTENSION_HEADERS; i++) {
         __u8 header[8];
@@ -426,24 +434,37 @@ static __always_inline int find_l4(struct __sk_buff *skb, __u8 next_header, __u3
             next_header = header[0];
             *offset += (header[1] + 1) * 8;
             break;
+        case NEXTHDR_ROUTING:
+            if (bpf_skb_load_bytes(skb, *offset, header, 4) < 0)
+                return L4_PASS;
+            if (header[3] != 0)
+                headers->routed = 1;
+            next_header = header[0];
+            *offset += (header[1] + 1) * 8;
+            break;
+        case NEXTHDR_AUTH:
+            if (bpf_skb_load_bytes(skb, *offset, header, 2) < 0)
+                return L4_PASS;
+            headers->authenticated = 1;
+            next_header = header[0];
+            *offset += (header[1] + 2) * 4;
+            break;
         case NEXTHDR_FRAGMENT: {
             __u16 fragment;
 
             if (bpf_skb_load_bytes(skb, *offset, header, 8) < 0)
                 return L4_PASS;
             fragment = header[2] << 8 | header[3];
-            /* A later fragment has no L4 header; an atomic one passes unchanged. */
-            if ((fragment & ~7U) != 0 || (fragment & 1) == 0)
+            /* A later fragment has no L4 header; an atomic one is walked through. */
+            if ((fragment & ~7U) != 0)
                 return L4_PASS;
-            *first_fragment = 1;
+            if (fragment & 1)
+                headers->first_fragment = 1;
             next_header = header[0];
             *offset += 8;
             break;
         }
-        case NEXTHDR_ROUTING:
-        case NEXTHDR_AUTH:
-        case NEXTHDR_ESP:
-        case NEXTHDR_MOBILITY:
+        case NEXTHDR_ESP: /* encrypted: nothing to inspect */
             return L4_PASS;
         default:
             return next_header;
@@ -458,7 +479,8 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
     struct walk_state state = {};
     struct ipv6hdr ip6;
     __u32 l4_offset = L3_PAYLOAD_OFFSET, l3_end, len, header_len, key = 0;
-    int first_fragment = 0, protocol, checksum_valid;
+    struct headers headers = {};
+    int protocol, checksum_valid;
     __u8 kind = L2DNS6RW_KIND_RA;
     __u16 lifetime = 0;
     struct scratch *work;
@@ -469,7 +491,7 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
         return TCX_PASS;
     if (bpf_skb_load_bytes(skb, IPV6_OFFSET, &ip6, sizeof(ip6)) < 0 || ip6.version != 6)
         return TCX_PASS;
-    protocol = find_l4(skb, ip6.nexthdr, &l4_offset, &first_fragment);
+    protocol = find_l4(skb, ip6.nexthdr, &l4_offset, &headers);
     if (protocol == L4_UNRESOLVED) {
         /* Stacked extension headers must not carry an RA or DHCPv6 reply past the program. */
         count(L2DNS6RW_COUNTER_SEEN);
@@ -504,8 +526,11 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
 
     count(L2DNS6RW_COUNTER_SEEN);
     state.ifindex = skb->ifindex;
-    if (first_fragment)
+    if (headers.first_fragment)
         return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_FRAGMENT);
+    if (headers.routed)
+        return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_ROUTED);
+    state.protected = headers.authenticated;
     if (ip6.payload_len == 0)
         return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_JUMBOGRAM);
     l3_end = L3_PAYLOAD_OFFSET + bpf_ntohs(ip6.payload_len);
@@ -515,17 +540,16 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
     if (!state.is_ra) {
         __be16 udp_length;
 
+        /* Too short for a DHCPv6 message: clients discard it, so it goes no further. */
         if (len < DHCPV6_HEADER_LEN ||
             bpf_skb_load_bytes(skb, l4_offset + 4, &udp_length, sizeof(udp_length)) < 0 ||
-            bpf_ntohs(udp_length) < DHCPV6_HEADER_LEN) {
-            count(L2DNS6RW_COUNTER_UNCHANGED);
-            return TCX_PASS;
-        }
+            bpf_ntohs(udp_length) < DHCPV6_HEADER_LEN)
+            return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_MALFORMED_HEADER);
         if (bpf_ntohs(udp_length) > len)
             return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_TRUNCATED);
         len = bpf_ntohs(udp_length);
     } else if (len < RA_HEADER_LEN) {
-        return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_MALFORMED, L2DNS6RW_REASON_MALFORMED_HEADER);
+        return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_MALFORMED_HEADER);
     }
     state.len = len;
 
@@ -572,7 +596,7 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
     if (state.no_dns)
         return finish(&state, &ip6, kind, lifetime, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_NO_DNS);
     if (state.malformed)
-        return finish(&state, &ip6, kind, lifetime, L2DNS6RW_VERDICT_MALFORMED, L2DNS6RW_REASON_MALFORMED_OPTION);
+        return finish(&state, &ip6, kind, lifetime, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_MALFORMED_OPTION);
     if (state.over_limit)
         return finish(&state, &ip6, kind, lifetime, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_TOO_LONG);
     if (!state.done)

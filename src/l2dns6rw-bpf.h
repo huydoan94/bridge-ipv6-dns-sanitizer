@@ -25,7 +25,6 @@ enum l2dns6rw_counter {
     L2DNS6RW_COUNTER_CHANGED,
     L2DNS6RW_COUNTER_UNCHANGED,
     L2DNS6RW_COUNTER_DROPPED,
-    L2DNS6RW_COUNTER_MALFORMED,
     L2DNS6RW_COUNTER_MAX,
 };
 
@@ -40,7 +39,6 @@ enum l2dns6rw_kind {
 enum l2dns6rw_verdict {
     L2DNS6RW_VERDICT_CHANGED,
     L2DNS6RW_VERDICT_DROPPED,
-    L2DNS6RW_VERDICT_MALFORMED,
 };
 
 enum l2dns6rw_reason {
@@ -56,9 +54,10 @@ enum l2dns6rw_reason {
     L2DNS6RW_REASON_MALFORMED_OPTION,
     L2DNS6RW_REASON_MALFORMED_HEADER,
     L2DNS6RW_REASON_TOO_MANY_HEADERS,
+    L2DNS6RW_REASON_ROUTED,
 };
 
-/* One ring-buffer report: drops and malformed packets always, rewrites when verbose. */
+/* One ring-buffer report: drops always, rewrites when verbose. */
 struct l2dns6rw_event {
     __u32 ifindex;
     __u8 kind;
@@ -68,7 +67,7 @@ struct l2dns6rw_event {
     __u16 lifetime;        /* RA: the original router lifetime, in seconds */
     __u16 dns_options;     /* RDNSS or DHCPv6 DNS options in the original */
     __u16 dns_addresses;   /* addresses in those options */
-    __u16 removed;         /* DNSSL and PvD, or Domain List, options removed */
+    __u16 removed;         /* DNSSL, PvD, Domain List and bad-length DNS options removed */
     __u16 length_before;   /* L4 message length, in bytes */
     __u16 length_after;
     __u8 source[16];

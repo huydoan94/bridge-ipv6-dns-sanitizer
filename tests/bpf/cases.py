@@ -74,14 +74,16 @@ def extension(kind, next_header, **fields):
     if kind in ("hop", "dest"):
         return bytes([next_header, 0]) + b"\x01\x04\0\0\0\0"  # PadN to 8 bytes
     if kind == "routing":
-        return bytes([next_header, 0, 4, 0]) + b"\0" * 4
+        return bytes([next_header, 0, 4, fields.get("segments", 0)]) + b"\0" * 4
+    if kind == "auth":
+        return bytes([next_header, 2]) + b"\0\0" + struct.pack("!II", 0x100, 1) + b"\0" * 4  # 16 bytes
     if kind == "fragment":
         offset_flags = fields.get("offset", 0) << 3 | (1 if fields.get("more") else 0)
         return bytes([next_header, 0]) + struct.pack("!HI", offset_flags, 0x1234)
     raise ValueError(kind)
 
 
-EXTENSION_NUMBER = {"hop": 0, "dest": 60, "routing": 43, "fragment": 44}
+EXTENSION_NUMBER = {"hop": 0, "dest": 60, "routing": 43, "fragment": 44, "auth": 51}
 
 
 def ipv6_frame(src, dst, protocol, l4, extensions=(), payload_len=None, dst_mac=ALL_NODES_MAC, trailing=b""):
@@ -141,7 +143,7 @@ def case(name, frame, expect, dns=ONE, **details):
 
 
 def cases():
-    malformed = ("pass", "MALFORMED_OPTION")
+    malformed = ("drop", "MALFORMED_OPTION")
     many = [nd_option(1, SRC_MAC)] * 65
     long_option = nd_option(14, b"\0" * (2040 - 2))  # one nonce-like option of 2040 bytes
     return [
@@ -158,19 +160,24 @@ def cases():
         case("ra-send-needs-rewrite", ra_frame([rdnss(["fd99::1"]), SEND]), ("drop", "PROTECTED")),
         case("ra-send-compliant", ra_frame([rdnss(ONE), SEND], lifetime=0), "pass"),
         case("ra-bad-checksum", ra_frame([rdnss(["fd99::1"])], state="invalid"), "rewrite", invalid=True),
-        case("ra-zero-length-option", ra_frame([rdnss(["fd99::1"]), b"\x01\x00" + b"\0" * 6]), ("pass", "MALFORMED_OPTION")),
-        case("ra-rdnss-bad-length", ra_frame([nd_option(25, b"\0" * 14)]), malformed),
+        case("ra-zero-length-option", ra_frame([rdnss(["fd99::1"]), b"\x01\x00" + b"\0" * 6]), malformed),
+        case("ra-rdnss-bad-length", ra_frame([SLLA, nd_option(25, b"\0" * 14)]), "rewrite"),
+        case("ra-rdnss-bad-length-then-good", ra_frame([nd_option(25, b"\0" * 14), SLLA, rdnss(["fd99::1"])]), "rewrite"),
         case("ra-option-overrun", ra_frame([b"\x01\x04" + b"\0" * 14]), malformed),
-        case("ra-short", ipv6_frame(ROUTER, ALL_NODES, 58, b"\x86\0\0\0" + b"\0" * 8), ("pass", "MALFORMED_HEADER")),
+        case("ra-short", ipv6_frame(ROUTER, ALL_NODES, 58, b"\x86\0\0\0" + b"\0" * 8), ("drop", "MALFORMED_HEADER")),
         case("ra-no-dns", ra_frame([rdnss(["fd99::1"])]), ("drop", "NO_DNS"), dns=None),
         case("ra-hop-by-hop", ra_frame([rdnss(["fd99::1"]), DNSSL], extensions=[("hop", {})]), "rewrite"),
         case("ra-seven-headers", ra_frame([rdnss(["fd99::1"])], extensions=[("hop", {})] + [("dest", {})] * 6), "rewrite"),
         case("ra-nine-headers", ra_frame([rdnss(["fd99::1"])], extensions=[("hop", {})] + [("dest", {})] * 8),
              ("drop", "TOO_MANY_HEADERS")),
-        case("ra-routing-header", ra_frame([rdnss(["fd99::1"])], extensions=[("routing", {})]), "pass"),
+        case("ra-routing-header", ra_frame([rdnss(["fd99::1"])], extensions=[("routing", {})]), "rewrite"),
+        case("ra-routing-segments-left", ra_frame([rdnss(["fd99::1"])], extensions=[("routing", {"segments": 1})]),
+             ("drop", "ROUTED")),
+        case("ra-ah-needs-rewrite", ra_frame([rdnss(["fd99::1"])], extensions=[("auth", {})]), ("drop", "PROTECTED")),
+        case("ra-ah-compliant", ra_frame([rdnss(ONE)], lifetime=0, extensions=[("auth", {})]), "pass"),
         case("ra-first-fragment", ra_frame([rdnss(["fd99::1"])], extensions=[("fragment", {"more": True})]),
              ("drop", "FRAGMENT")),
-        case("ra-atomic-fragment", ra_frame([rdnss(["fd99::1"])], extensions=[("fragment", {})]), "pass"),
+        case("ra-atomic-fragment", ra_frame([rdnss(["fd99::1"])], extensions=[("fragment", {})]), "rewrite"),
         case("ra-later-fragment", ra_frame([rdnss(["fd99::1"])], extensions=[("fragment", {"offset": 1})]), "pass"),
         case("ra-jumbogram", ra_frame([rdnss(["fd99::1"])], extensions=[("hop", {})], payload_len=0),
              ("drop", "JUMBOGRAM")),
@@ -197,10 +204,10 @@ def cases():
         case("dhcpv6-reconfigure", dhcp_frame([CLIENTID, DNS], message=10), "pass"),
         case("dhcpv6-zero-checksum", dhcp_frame([CLIENTID, DNS], state="zero"), "rewrite", invalid=True),
         case("dhcpv6-bad-checksum", dhcp_frame([CLIENTID, DNS], state="invalid"), "rewrite", invalid=True),
-        case("dhcpv6-dns-bad-length", dhcp_frame([option(23, b"\0" * 8)]), malformed),
+        case("dhcpv6-dns-bad-length", dhcp_frame([CLIENTID, option(23, b"\0" * 8)]), "rewrite"),
         case("dhcpv6-option-overrun", dhcp_frame([b"\x00\x01\x00\x40" + b"\0" * 4]), malformed),
         case("dhcpv6-udp-length-too-big", dhcp_frame([DNS], length_delta=8), ("drop", "TRUNCATED")),
-        case("dhcpv6-udp-length-short", dhcp_frame([DNS], length_delta=-24), "pass"),
+        case("dhcpv6-udp-length-short", dhcp_frame([DNS], length_delta=-24), ("drop", "MALFORMED_HEADER")),
         case("dhcpv6-trailing-bytes", dhcp_frame([CLIENTID, DNS], trailing=b"\xaa" * 4), "rewrite"),
         case("dhcpv6-no-dns", dhcp_frame([CLIENTID, DNS]), ("drop", "NO_DNS"), dns=None),
     ]
@@ -217,8 +224,13 @@ def split(frame):
     """Returns (ip header, extension headers, protocol, l4) of an IPv6 frame."""
     ip = frame[14:54]
     protocol, offset = ip[6], 54
-    while protocol in (0, 60, 43, 44):
-        length = 8 if protocol == 44 else (frame[offset + 1] + 1) * 8
+    while protocol in (0, 60, 43, 44, 51):
+        if protocol == 44:
+            length = 8
+        elif protocol == 51:
+            length = (frame[offset + 1] + 2) * 4
+        else:
+            length = (frame[offset + 1] + 1) * 8
         protocol, offset = frame[offset], offset + length
     return ip, frame[54:offset], protocol, frame[offset:]
 
@@ -242,7 +254,8 @@ def check_rewrite(item, output, problems):
         if l4[:2] + l4[4:6] + l4[8:16] != original[:2] + original[4:6] + original[8:16]:
             problems.append("RA header fields changed")
         dns = [body[6:] for kind, body in after if kind == 25]
-        had_dns = any(kind == 25 for kind, _ in before)
+        # An RDNSS of a bad length is removed, not rewritten.
+        had_dns = any(kind == 25 and len(body) > 6 and (len(body) - 6) % 16 == 0 for kind, body in before)
     else:
         before = dhcp_options(original[12:struct.unpack("!H", original[4:6])[0]])
         after = dhcp_options(l4[12:])
@@ -252,7 +265,8 @@ def check_rewrite(item, output, problems):
         if l4[:4] + l4[8:12] != original[:4] + original[8:12]:
             problems.append("ports, message type or transaction ID changed")
         dns = [body for code, body in after if code == 23]
-        had_dns = any(code == 23 for code, _ in before)
+        # A DNS option of a bad length is removed, not rewritten.
+        had_dns = any(code == 23 and body and len(body) % 16 == 0 for code, body in before)
     if dns != ([expected_dns] if had_dns else []):
         problems.append(f"DNS options are {[d.hex() for d in dns]}, expected {[expected_dns.hex()] if had_dns else []}")
     if [o for o in after if o[0] not in removed] != [o for o in before if o[0] not in removed]:
@@ -277,10 +291,8 @@ def check(path):
             if mode == "pass":
                 if int(retval) != TCX_PASS or output != item["frame"]:
                     problems.append("not passed untouched")
-                if wanted_reason is None and verdict != "-":
+                if verdict != "-":
                     problems.append(f"reported verdict {verdict}")
-                if wanted_reason is not None and (verdict, reason) != (str(VERDICT["MALFORMED"]), str(wanted_reason)):
-                    problems.append(f"reported {verdict}/{reason}, expected malformed/{wanted_reason}")
             elif mode == "drop":
                 if int(retval) != TCX_DROP:
                     problems.append("not dropped")

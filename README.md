@@ -57,21 +57,27 @@ has no timers. When a device briefly has no ULA, its last address stays in use.
 
 ## Packet handling
 
-- Extension headers: up to 8 Hop-by-Hop and Destination Options headers are
-  walked. A longer chain is dropped, since it could hide a target.
-- Routing, AH, ESP and Mobility headers pass unchanged.
-- A first fragment of a target is dropped; later fragments and atomic
-  fragments pass unchanged.
+- Extension headers: up to 8 Hop-by-Hop, Destination Options, Routing, AH and
+  atomic Fragment headers are walked. A longer chain is dropped, since it
+  could hide a target.
+- A target behind a Routing header with segments left is dropped: it is not
+  for this hop.
+- ESP and Mobility headers pass unchanged.
+- A first fragment of a target is dropped; later fragments pass unchanged.
 - Jumbograms, truncated targets (IPv6 or UDP length beyond the frame), and
   devices without a DNS list are dropped.
 - A message is rewritten only up to 2048 bytes, and with up to 64 options.
   A longer one, or one whose rewrite would exceed 2048 bytes, is dropped.
 - A valid incoming checksum stays valid; an invalid one stays deliberately
   invalid. A zero UDP checksum counts as invalid (RFC 8200 8.1).
-- DHCPv6 Authentication option 11 and SEND RSA Signature option 12 are left
-  untouched. If such a packet would need a rewrite, it is dropped; if it needs
-  none, it passes unchanged.
-- Malformed options or headers pass unchanged; clients discard them anyway.
+- DHCPv6 Authentication option 11, SEND RSA Signature option 12 and an AH
+  header are left untouched. If such a packet would need a rewrite, it is
+  dropped; if it needs none, it passes unchanged.
+- An RDNSS or DNS option whose addresses are empty or not a multiple of 16
+  bytes is removed and the rest of the message kept; clients ignore just
+  that option.
+- Other malformed options, and messages too short for their header, are
+  dropped; clients discard them anyway.
 - Bytes after the UDP message inside the IPv6 payload are removed when a
   DHCPv6 message is rewritten.
 
@@ -161,8 +167,7 @@ appears.
 `dns_server` is optional and repeatable, up to 8 IPv6 addresses. Without it,
 each device's own or its bridge's ULA is used.
 
-`verbose` also logs each rewritten packet. Drops and malformed packets are
-always logged.
+`verbose` also logs each rewritten packet. Drops are always logged.
 
 Configure a DNS list and restart the service:
 
@@ -196,7 +201,7 @@ l2vl0: sanitizing RA and DHCPv6 at ingress
 l2vl0: DNS fd00:abcd::1(br-lan)
 dev=l2vl0 type=RA from=fe80::a rewritten router-lifetime=1800->0 rdnss-options=1 rdnss-addresses=1 removed=1 bytes=72->48
 dev=l2vl0 type=RA from=fe80::a DROP: SEND-signed or authenticated message needs a rewrite
-packets seen=6 changed=4 unchanged=0 dropped=2 malformed=0
+packets seen=6 changed=4 unchanged=0 dropped=2
 ```
 
 ## Formatting

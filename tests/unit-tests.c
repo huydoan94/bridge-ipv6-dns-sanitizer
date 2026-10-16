@@ -216,14 +216,18 @@ static void test_event_lines(void)
     events_format(&value, "eth9", line, sizeof(line));
     EXPECT(strcmp(line, "dev=eth9 type=unknown from=fe80::a DROP: more than 8 IPv6 extension headers") == 0);
 
-    value = event(L2DNS6RW_KIND_RA, L2DNS6RW_VERDICT_MALFORMED, L2DNS6RW_REASON_MALFORMED_OPTION);
+    value = event(L2DNS6RW_KIND_RA, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_MALFORMED_OPTION);
     events_format(&value, "l2vl0", line, sizeof(line));
-    EXPECT(strcmp(line, "dev=l2vl0 type=RA from=fe80::a passed unchanged: malformed option") == 0);
+    EXPECT(strcmp(line, "dev=l2vl0 type=RA from=fe80::a DROP: malformed option") == 0);
+
+    value = event(L2DNS6RW_KIND_DHCPV6_REPLY, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_ROUTED);
+    events_format(&value, "l2vl0", line, sizeof(line));
+    EXPECT(strcmp(line, "dev=l2vl0 type=DHCPv6-Reply from=fe80::a DROP: routing header with segments left") == 0);
 
     /* Every reason the program reports has its own text. */
-    for (unsigned int reason = L2DNS6RW_REASON_NONE; reason <= L2DNS6RW_REASON_TOO_MANY_HEADERS; reason++)
+    for (unsigned int reason = L2DNS6RW_REASON_NONE; reason <= L2DNS6RW_REASON_ROUTED; reason++)
         EXPECT(strcmp(events_reason(reason), "unknown") != 0);
-    EXPECT(strcmp(events_reason(L2DNS6RW_REASON_TOO_MANY_HEADERS + 1), "unknown") == 0);
+    EXPECT(strcmp(events_reason(L2DNS6RW_REASON_ROUTED + 1), "unknown") == 0);
 
     /* A long device name cannot overflow the line. */
     events_format(&value, "a-very-long-dev", line, 16);

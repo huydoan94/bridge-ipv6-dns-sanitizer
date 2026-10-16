@@ -31,6 +31,8 @@ const char *events_reason(unsigned int reason)
         return "malformed header";
     case L2DNS6RW_REASON_TOO_MANY_HEADERS:
         return "more than 8 IPv6 extension headers";
+    case L2DNS6RW_REASON_ROUTED:
+        return "routing header with segments left";
     default:
         return "unknown";
     }
@@ -92,22 +94,11 @@ void events_format(const struct l2dns6rw_event *event, const char *device, char 
             );
         }
         break;
-    case L2DNS6RW_VERDICT_DROPPED:
-        snprintf(
-            line,
-            size,
-            "dev=%s type=%s from=%s DROP: %s",
-            device,
-            kind_name(event->kind),
-            source,
-            events_reason(event->reason)
-        );
-        break;
     default:
         snprintf(
             line,
             size,
-            "dev=%s type=%s from=%s passed unchanged: %s",
+            "dev=%s type=%s from=%s DROP: %s",
             device,
             kind_name(event->kind),
             source,

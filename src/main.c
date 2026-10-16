@@ -207,12 +207,11 @@ static int run(struct daemon *daemon)
 static void log_counters(const struct program *program)
 {
     log_info(
-        "packets seen=%llu changed=%llu unchanged=%llu dropped=%llu malformed=%llu",
+        "packets seen=%llu changed=%llu unchanged=%llu dropped=%llu",
         program_counter(program, L2DNS6RW_COUNTER_SEEN),
         program_counter(program, L2DNS6RW_COUNTER_CHANGED),
         program_counter(program, L2DNS6RW_COUNTER_UNCHANGED),
-        program_counter(program, L2DNS6RW_COUNTER_DROPPED),
-        program_counter(program, L2DNS6RW_COUNTER_MALFORMED)
+        program_counter(program, L2DNS6RW_COUNTER_DROPPED)
     );
 }
 

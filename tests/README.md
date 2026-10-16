@@ -22,16 +22,17 @@ COVERAGE=1 sh tests/run-tests.sh    # gcov line and branch coverage
 
 ## BPF packet tests
 
-`tests/bpf/cases.py` builds 51 frames and the outcome each must have;
+`tests/bpf/cases.py` builds 55 frames and the outcome each must have;
 `tests/bpf/runner.c` runs the program on them in a kernel with
 `BPF_PROG_TEST_RUN`, which needs root, and `cases.py check` verifies every
 rewrite option by option (the DNS list, removed and kept options, lengths,
 the checksum state).
 
 The cases cover RA and DHCPv6 rewrites with one, two and eight servers,
-compliant messages, duplicate DNS options, protected (SEND, Authentication)
-messages, bad and zero checksums, malformed options and headers, extension
-headers (within and beyond the limit), routing headers, fragments, jumbograms,
+compliant messages, duplicate DNS options, protected (SEND, Authentication,
+AH) messages, bad and zero checksums, malformed options and headers, DNS
+options of a bad length, extension headers (within and beyond the limit),
+routing headers with and without segments left, fragments, jumbograms,
 truncation, the size and option limits, a device without DNS, and traffic
 that is not a target.
 
