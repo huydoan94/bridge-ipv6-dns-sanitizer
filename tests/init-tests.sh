@@ -157,4 +157,20 @@ reset_test_state
 detach
 [ "$CALLS" = " stop daemon -D" ] || fail "detach did not stop the service, then run the daemon with -D: $CALLS"
 
-printf 'PASS init script: devices, DNS servers, validation and detach\n'
+# Every datatype the script validates with must exist in OpenWrt's libvalidate
+# (ubox validate.c): with an unknown one, validate_data prints an error that
+# rc.common evaluates as shell code, and start aborts with a syntax error.
+LIBVALIDATE_TYPES=" or and not neg list min max range minlength maxlength rangelength integer \
+uinteger float ufloat bool string hexstring ip4addr ip6addr ipaddr cidr4 cidr6 cidr netmask4 \
+netmask6 ipmask4 ipmask6 ipmask port portrange macaddr uciname wpakey wepkey hostname host \
+network phonedigit directory device file regex uci "
+specs=$(sed -n '/uci_validate_section/,/; then/p' "$PROJECT_DIR/files/l2dns6rw.init" | grep -o "'[a-z_]*:[^']*'")
+[ -n "$specs" ] || fail "no uci_validate_section datatypes found in the init script"
+for type in $(printf '%s\n' "$specs" | sed "s/^'[a-z_]*://; s/'\$//" | grep -oE '[a-z][a-z0-9]*'); do
+	case "$LIBVALIDATE_TYPES" in
+		*" $type "*) ;;
+		*) fail "datatype $type is not known to OpenWrt's validate_data" ;;
+	esac
+done
+
+printf 'PASS init script: devices, DNS servers, validation, datatypes and detach\n'

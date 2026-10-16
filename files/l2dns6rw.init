@@ -36,8 +36,9 @@ start_service()
 		return 1
 	fi
 
+	# Device names are at most 15 characters (IFNAMSIZ - 1).
 	if ! uci_validate_section "$CONF" sanitizer main \
-		'device:list(netdevice)' \
+		'device:list(maxlength(15))' \
 		'dns_server:list(ip6addr)'; then
 		service_log err "option main.device must name devices and main.dns_server must hold IPv6 addresses"
 		return 1
