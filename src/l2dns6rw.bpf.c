@@ -479,6 +479,7 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
     struct walk_state state = {};
     struct ipv6hdr ip6;
     __u32 l4_offset = L3_PAYLOAD_OFFSET, l3_end, len, header_len, key = 0;
+    __u64 size;
     struct headers headers = {};
     int protocol, checksum_valid;
     __u8 kind = L2DNS6RW_KIND_RA;
@@ -558,11 +559,17 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
         return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_WRITE_FAILED);
     input = work->input;
     output = work->output;
-    /* Before the check, so the compiler cannot drop it. */
-    barrier_var(len);
-    if (len == 0 || len > MAX_L4)
+    /*
+     * The check and the helper's size use one 64-bit copy the compiler cannot
+     * see through. On the 32-bit len, clang 18 checks a zero-extended copy
+     * and passes the original register, which the verifier then still sees
+     * as unbounded.
+     */
+    size = len;
+    barrier_var(size);
+    if (size == 0 || size > MAX_L4)
         return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_TOO_LONG);
-    if (bpf_skb_load_bytes(skb, l4_offset, input, len) < 0)
+    if (bpf_skb_load_bytes(skb, l4_offset, input, size) < 0)
         return finish(&state, &ip6, kind, 0, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_TRUNCATED);
     __builtin_memset(input + (len & BUFFER_MASK), 0, 4);
     checksum_valid = fold(l4_sum(&ip6, (__u8)protocol, input, len)) == 0xffff;
@@ -608,10 +615,12 @@ int l2dns6rw_ingress(struct __sk_buff *skb)
     if (state.protected)
         return finish(&state, &ip6, kind, lifetime, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_PROTECTED);
 
-    len = state.out;
-    barrier_var(len);
-    if (len == 0 || len > MAX_L4)
+    /* As for the input: len is taken from the checked copy. */
+    size = state.out;
+    barrier_var(size);
+    if (size == 0 || size > MAX_L4)
         return finish(&state, &ip6, kind, lifetime, L2DNS6RW_VERDICT_DROPPED, L2DNS6RW_REASON_TOO_LONG);
+    len = (__u32)size;
     if (state.is_ra) {
         output[RA_LIFETIME_OFFSET] = 0;
         output[RA_LIFETIME_OFFSET + 1] = 0;
