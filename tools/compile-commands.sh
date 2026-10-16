@@ -38,7 +38,7 @@ separator=
 	for file in "$repo"/src/*.c; do
 		case $file in
 		*.bpf.c)
-			entry "$file" "\"$bpf_clang\", \"-O2\", \"-g\", \"-target\", \"bpfel\", \"-Wall\", \"-Wextra\", \"-I$repo/src\", \"-I$staging\", \"-I$toolchain\""
+			entry "$file" "\"$bpf_clang\", \"-O2\", \"-g\", \"-target\", \"bpfel\", \"-Wall\", \"-Wextra\", \"-I$repo/src\", \"-I$repo/src/bpf-include\", \"-I$staging\", \"-I$toolchain\""
 			;;
 		*)
 			entry "$file" "\"/usr/bin/gcc\", \"-std=c11\", \"-D_GNU_SOURCE\", $warnings, \"-DPROGRAM_VERSION=\\\"$version\\\"\", \"-I$repo/src\", \"-isystem\", \"$staging\""

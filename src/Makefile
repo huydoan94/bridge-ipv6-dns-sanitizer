@@ -30,9 +30,10 @@ $(OBJECT_DIR)/%.o: %.c
 	$(CC) -I$(CURDIR) -D_GNU_SOURCE -DPROGRAM_VERSION='"$(VERSION)"' $(CPPFLAGS) $(LIBBPF_CFLAGS) $(CFLAGS) $(WARNINGS) -std=c11 -MMD -MP -c -o $@ $<
 
 # Kernel BPF objects carry BTF for libbpf, but not the DWARF debug sections.
-$(BPF_OBJECT): l2dns6rw.bpf.c l2dns6rw-bpf.h
+# bpf-include holds headers that replace the target's, for the program only.
+$(BPF_OBJECT): l2dns6rw.bpf.c l2dns6rw-bpf.h bpf-include/asm/byteorder.h
 	@mkdir -p $(@D)
-	$(BPF_CLANG) -O2 -g -target $(BPF_TARGET) -I$(CURDIR) $(BPF_INCLUDES) -Wall -Wextra -Werror -c -o $@ $<
+	$(BPF_CLANG) -O2 -g -target $(BPF_TARGET) -I$(CURDIR) -I$(CURDIR)/bpf-include $(BPF_INCLUDES) -Wall -Wextra -Werror -c -o $@ $<
 	$(if $(BPF_STRIP),$(BPF_STRIP) --strip-debug $@)
 	@# LLVM 20+ compiles code it proves unreachable to a call of the __bpf_trap
 	@# kfunc; loading it needs kernel BTF, which OpenWrt kernels do not ship.

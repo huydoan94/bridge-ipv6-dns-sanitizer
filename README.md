@@ -256,6 +256,7 @@ and one argument per line for substantial multi-line declarations and calls.
 src/
 ├── l2dns6rw.bpf.c   the BPF program: parsing, rewrite, drop policy
 ├── l2dns6rw-bpf.h   maps, counters and events shared with the daemon
+├── bpf-include/     asm/byteorder.h for the program on any target (MIPS)
 ├── main.c           daemon: attach devices, follow kernel changes, log events
 ├── program.c/.h     loading, pinning and attaching the program (libbpf)
 ├── dns.c/.h         automatic DNS: a device's or its bridge's first ULA
